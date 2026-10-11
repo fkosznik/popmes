@@ -348,7 +348,7 @@ class ConcurrencyTests(TransactionTestCase):
         order = Order.objects.create(
             customer=customer, created_by=a, due_at=timezone.now()
         )
-        item = Item(order=order, variant=variant, quantity=20)
+        item = Item(order=order, variant=variant, quantity=100)
         s.snapshot_item(item, variant)
         item.save()
         with transaction.atomic():
@@ -377,8 +377,12 @@ class ConcurrencyTests(TransactionTestCase):
                 connections.close_all()
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            results = list(executor.map(report, [a.pk, b.pk]))
-        self.assertEqual(sorted(results), [200, 400])
-        item.refresh_from_db()
-        self.assertEqual(item.packed, 10)
-        self.assertEqual(s.available(order, product.pk), 0)
+            for attempt in range(5):
+                if attempt:
+                    with transaction.atomic():
+                        s.production_report(p, a, {"grams": 300})
+                results = list(executor.map(report, [a.pk, b.pk]))
+                self.assertEqual(sorted(results), [200, 400])
+                item.refresh_from_db()
+                self.assertEqual(item.packed, 10 * (attempt + 1))
+                self.assertEqual(s.available(order, product.pk), 0)

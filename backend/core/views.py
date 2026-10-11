@@ -111,7 +111,11 @@ def mutation(fn):
         ).hexdigest()
         try:
             with transaction.atomic():
-                get_user_model().objects.select_for_update().get(pk=request.user.pk)
+                # Serialize retries without blocking foreign-key checks from
+                # other workers' audit records at transaction commit.
+                get_user_model().objects.select_for_update(no_key=True).get(
+                    pk=request.user.pk
+                )
                 receipt = RequestReceipt.objects.filter(
                     user=request.user, key=key
                 ).first()
