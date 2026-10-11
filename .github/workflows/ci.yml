@@ -1,0 +1,70 @@
+name: POPMES checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POP_TEST_URL: http://127.0.0.1:8080
+      POP_TEST_USER: admin
+      POP_TEST_PASSWORD: CI-local-test-password-932!
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Generate isolated test configuration
+        run: |
+          python3 scripts/setup.py > /dev/null
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path('.env')
+          lines=[('ADMIN_PASSWORD='+os.environ['POP_TEST_PASSWORD']) if line.startswith('ADMIN_PASSWORD=') else line for line in p.read_text().splitlines()]
+          p.write_text('\n'.join(lines)+'\n')
+          PY
+          docker compose config --quiet
+          DOMAIN=ci.example.com docker compose -f compose.yaml -f compose.https.yaml config --quiet
+      - name: Build and start the complete Docker stack
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Backend tests on PostgreSQL (including concurrent packing)
+        run: |
+          docker compose exec -T backend python manage.py check
+          docker compose exec -T backend python manage.py makemigrations --check --dry-run
+          docker compose exec -T backend python manage.py test core -v 2
+      - name: Seed sample data
+        run: docker compose exec -T backend python manage.py seed_demo
+      - name: Browser test
+        run: |
+          npm ci --prefix frontend
+          cd frontend
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Verify backup and restore
+        run: |
+          docker compose exec -T backend python -c "from pathlib import Path; Path('/app/media/backup-probe.txt').write_text('POPMES backup integrity')"
+          docker compose exec -T backend python manage.py dumpdata core --indent 2 > /tmp/before.json
+          bash scripts/backup.sh
+          backup_path=$(find "$PWD/backups" -mindepth 1 -maxdepth 1 -type d | head -1)
+          bash scripts/restore.sh "$backup_path" --replace-current-data
+          docker compose exec -T backend python manage.py dumpdata core --indent 2 > /tmp/after.json
+          cmp /tmp/before.json /tmp/after.json
+          docker compose exec -T backend python -c "from pathlib import Path; assert Path('/app/media/backup-probe.txt').read_text() == 'POPMES backup integrity'"
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --tail 120
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure
+          path: frontend/test-results
+      - name: Stop test containers
+        if: always()
+        run: docker compose down -v

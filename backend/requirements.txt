@@ -1,0 +1,10 @@
+asgiref==3.12.1
+Django==5.2.18
+djangorestframework==3.18.3
+gunicorn==26.2.0
+pillow==12.3.0
+psycopg==3.3.6
+psycopg-binary==3.3.6
+pypdf==6.20.0
+sqlparse==0.6.0
+typing_extensions==4.16.0
