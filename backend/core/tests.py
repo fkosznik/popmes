@@ -7,7 +7,7 @@ from datetime import timedelta
 from unittest import skipUnless
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.db import connection, close_old_connections, transaction
+from django.db import connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -359,18 +359,22 @@ class ConcurrencyTests(TransactionTestCase):
         barrier = threading.Barrier(2)
 
         def report(uid):
-            close_old_connections()
-            client = APIClient()
-            client.force_login(get_user_model().objects.get(pk=uid))
-            barrier.wait()
-            response = client.post(
-                f"/api/tasks/{task.pk}/report/",
-                {"units": 10},
-                format="json",
-                HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
-            )
-            close_old_connections()
-            return response.status_code
+            connections.close_all()
+            try:
+                client = APIClient()
+                client.force_login(get_user_model().objects.get(pk=uid))
+                barrier.wait(timeout=10)
+                response = client.post(
+                    f"/api/tasks/{task.pk}/report/",
+                    {"units": 10},
+                    format="json",
+                    HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+                )
+                return response.status_code
+            finally:
+                # Each thread owns a persistent connection; close it before
+                # Django drops the isolated test database.
+                connections.close_all()
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(report, [a.pk, b.pk]))
