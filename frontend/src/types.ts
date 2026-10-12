@@ -2,8 +2,29 @@ export type User = {
   id: number;
   username: string;
   name: string;
+  email: string;
+  phone: string;
+  street: string;
+  postal_code: string;
+  city: string;
+  country: string;
+  language: "pl" | "en";
+  timezone: string;
+  start_page: string;
+  appearance: "light" | "dark";
   roles: string[];
   active: boolean;
+};
+export type Organization = {
+  name: string;
+  default_language: "pl" | "en";
+  theme: "plum" | "teal" | "forest" | "amber";
+};
+export type Workspace = {
+  id: number;
+  name: string;
+  active: boolean;
+  primary: boolean;
 };
 export type Product = {
   id: number;
@@ -241,4 +262,7 @@ export type State = {
   stock: StockItem[];
   categories: StockCategory[];
   suppliers: Supplier[];
+  organization: Organization;
+  workspaces: Workspace[];
+  workspace_id: number;
 };

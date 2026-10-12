@@ -5,11 +5,32 @@
   font-synthesis: none;
   font-size: 14px;
   --accent: #885cba;
+  --accent-strong: #7851a7;
+  --accent-soft: #b692de;
+  --accent-shadow: #885cba22;
   --pink: #efadc2;
   --line: #eae9ef;
   --muted: #8b8997;
   --ink: #282534;
   --green: #388574;
+}
+:root[data-theme="teal"] {
+  --accent: #14627a;
+  --accent-strong: #0e4e63;
+  --accent-soft: #8ec4d4;
+  --accent-shadow: #14627a22;
+}
+:root[data-theme="forest"] {
+  --accent: #2f7d4a;
+  --accent-strong: #24653c;
+  --accent-soft: #8fceaa;
+  --accent-shadow: #2f7d4a22;
+}
+:root[data-theme="amber"] {
+  --accent: #b86a1a;
+  --accent-strong: #8f5012;
+  --accent-soft: #e3b48a;
+  --accent-shadow: #b86a1a22;
 }
 * {
   box-sizing: border-box;
@@ -59,18 +80,18 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid #b692de;
+  outline: 3px solid var(--accent-soft);
   outline-offset: 2px;
 }
 .primary {
   background: var(--accent);
   color: white;
   border-color: var(--accent);
-  box-shadow: 0 3px 8px #885cba18;
+  box-shadow: 0 3px 8px var(--accent-shadow);
 }
 .primary:hover:not(:disabled) {
-  background: #7851a7;
-  border-color: #7851a7;
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 .primary svg {
   width: 17px;
@@ -196,6 +217,21 @@ small {
   font-size: 10px;
   font-weight: 400;
 }
+.workspace > div {
+  min-width: 0;
+}
+.workspace select {
+  display: block;
+  width: 100%;
+  max-width: 148px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+}
 .workspace-icon {
   display: grid;
   place-items: center;
@@ -298,11 +334,127 @@ small {
   white-space: nowrap;
 }
 .user button {
-  margin-left: auto;
   border: 0;
   color: #a59db4;
   background: none;
   padding: 5px;
+}
+.user .user-open {
+  flex: 1;
+  min-width: 0;
+  margin-left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 6px;
+  border-radius: 8px;
+  color: inherit;
+  font-weight: 400;
+  text-align: left;
+}
+.user .user-open:hover:not(:disabled),
+.user .user-open.selected {
+  background: #ffffff14;
+  border-color: transparent;
+  color: inherit;
+}
+.user .user-logout {
+  margin-left: auto;
+}
+.account-page {
+  display: grid;
+  gap: 18px;
+}
+.account-page > form {
+  display: grid;
+  gap: 18px;
+}
+.account-body {
+  padding: 22px 23px 24px;
+}
+.account-body input[readonly] {
+  background: #f6f5f8;
+  color: #8a8494;
+}
+.account-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 2px;
+}
+.theme-choices {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.theme-choices button {
+  flex-direction: column;
+  min-height: 84px;
+}
+.theme-choices button[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.theme-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+.appearance-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.appearance-choices button[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.space-list {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.space-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.space-list li strong {
+  margin-right: auto;
+}
+.space-list .tag {
+  font-size: 11px;
+  color: var(--muted);
+}
+.role-list {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+.role-list label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.role-list small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.account-body .account-actions {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 main {
   margin-left: 230px;
@@ -355,6 +507,16 @@ main {
   border-left: 1px solid var(--line);
   padding-left: 23px;
   color: #827c90;
+}
+.mode-toggle {
+  border: 0;
+  background: transparent;
+  color: #827c90;
+  padding: 8px;
+}
+.mode-toggle:hover:not(:disabled) {
+  background: #f0edf6;
+  color: var(--ink);
 }
 .mobile-toggle {
   display: none;
@@ -1337,6 +1499,12 @@ pre {
   grid-template-columns: 1fr 1fr;
   gap: 17px;
 }
+.form-grid.account-address {
+  grid-template-columns: 150px minmax(0, 1.2fr) minmax(0, 1fr);
+}
+.form-grid.account-prefs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .field {
   display: flex;
   flex-direction: column;
@@ -1790,8 +1958,13 @@ footer span:last-child {
   .queue-summary > span:last-child {
     display: none;
   }
-  .form-grid {
+  .form-grid,
+  .form-grid.account-address,
+  .form-grid.account-prefs {
     grid-template-columns: 1fr;
+  }
+  .theme-choices {
+    grid-template-columns: 1fr 1fr;
   }
   .wide {
     grid-column: 1;
@@ -1875,4 +2048,188 @@ footer span:last-child {
   .product-card h3 {
     font-size: 12px;
   }
+}
+html[data-mode="dark"] {
+  color-scheme: dark;
+  --ink: #f2f0f6;
+  --muted: #aaa4b4;
+  --line: #34313c;
+  --bg: #121116;
+  --surface: #1c1b22;
+  --surface-2: #26242e;
+  background: var(--bg);
+  color: var(--ink);
+}
+html[data-mode="dark"] body,
+html[data-mode="dark"] .app,
+html[data-mode="dark"] main,
+html[data-mode="dark"] .content {
+  background: var(--bg);
+  color: var(--ink);
+}
+html[data-mode="dark"] .sidebar {
+  background: #1a1922;
+}
+html[data-mode="dark"] .topbar,
+html[data-mode="dark"] .panel,
+html[data-mode="dark"] .metric,
+html[data-mode="dark"] .task-card,
+html[data-mode="dark"] .drawer,
+html[data-mode="dark"] .modal,
+html[data-mode="dark"] button,
+html[data-mode="dark"] input,
+html[data-mode="dark"] select,
+html[data-mode="dark"] textarea,
+html[data-mode="dark"] .day-plan,
+html[data-mode="dark"] .instruction,
+html[data-mode="dark"] .form-callout {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line);
+}
+html[data-mode="dark"] .sidebar nav button,
+html[data-mode="dark"] .sidebar .user-open,
+html[data-mode="dark"] .sidebar .user-logout,
+html[data-mode="dark"] .workspace select {
+  background: transparent;
+  color: inherit;
+}
+html[data-mode="dark"] button:hover:not(:disabled),
+html[data-mode="dark"] tbody tr:hover td,
+html[data-mode="dark"] th,
+html[data-mode="dark"] .search input,
+html[data-mode="dark"] th.sortable button {
+  background: var(--surface-2);
+}
+html[data-mode="dark"] .primary,
+html[data-mode="dark"] .primary:hover:not(:disabled),
+html[data-mode="dark"] .weight-picker button.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+html[data-mode="dark"] .text-button,
+html[data-mode="dark"] .icon-button,
+html[data-mode="dark"] .mode-toggle,
+html[data-mode="dark"] .search input {
+  background: transparent;
+}
+html[data-mode="dark"] .mode-toggle {
+  color: #c8c2d2;
+}
+html[data-mode="dark"] .content h1,
+html[data-mode="dark"] .content h2,
+html[data-mode="dark"] .content h3,
+html[data-mode="dark"] .drawer h2,
+html[data-mode="dark"] .drawer h3,
+html[data-mode="dark"] .modal h2,
+html[data-mode="dark"] .modal h3,
+html[data-mode="dark"] td strong,
+html[data-mode="dark"] .metric > strong,
+html[data-mode="dark"] .day-plan h2,
+html[data-mode="dark"] .task-info > strong,
+html[data-mode="dark"] .progress-cell b,
+html[data-mode="dark"] .tabs button.active,
+html[data-mode="dark"] .text-button:hover,
+html[data-mode="dark"] th.sortable button:hover:not(:disabled),
+html[data-mode="dark"] th.sortable[aria-sort="ascending"] button,
+html[data-mode="dark"] th.sortable[aria-sort="descending"] button,
+html[data-mode="dark"] .breadcrumb strong {
+  color: var(--ink);
+}
+html[data-mode="dark"] .page-heading p,
+html[data-mode="dark"] .eyebrow,
+html[data-mode="dark"] .panel-head p,
+html[data-mode="dark"] td,
+html[data-mode="dark"] td small,
+html[data-mode="dark"] .metric p,
+html[data-mode="dark"] .metric > div,
+html[data-mode="dark"] .breadcrumb,
+html[data-mode="dark"] .sync,
+html[data-mode="dark"] .top-date,
+html[data-mode="dark"] .field > span,
+html[data-mode="dark"] .task-title p,
+html[data-mode="dark"] .task-top,
+html[data-mode="dark"] .task-info,
+html[data-mode="dark"] .form-help,
+html[data-mode="dark"] .day-plan > p,
+html[data-mode="dark"] .empty,
+html[data-mode="dark"] .empty h3,
+html[data-mode="dark"] .empty p,
+html[data-mode="dark"] .drawer-customer,
+html[data-mode="dark"] .attention > div > span {
+  color: var(--muted);
+}
+html[data-mode="dark"] td {
+  border-bottom-color: var(--line);
+}
+html[data-mode="dark"] .account-body input[readonly] {
+  background: #16151c;
+  color: #8d8796;
+}
+html[data-mode="dark"] .task-card.with-logo {
+  background: #142428;
+  border-color: #245868;
+}
+html[data-mode="dark"] .task-card.with-logo .task-title h2 {
+  color: #8ec4d4;
+}
+html[data-mode="dark"] .badge {
+  background: #2c2a33;
+  color: #c8c2d0;
+}
+html[data-mode="dark"] .badge.queued,
+html[data-mode="dark"] .badge.ready {
+  background: #2a2436;
+  color: #cbb6e4;
+}
+html[data-mode="dark"] .badge.in_progress,
+html[data-mode="dark"] .badge.producing {
+  background: #332a1c;
+  color: #e6c27a;
+}
+html[data-mode="dark"] .badge.awaiting_shipment,
+html[data-mode="dark"] .badge.completed,
+html[data-mode="dark"] .badge.done,
+html[data-mode="dark"] .badge.issued {
+  background: #1a2e26;
+  color: #8dceb0;
+}
+html[data-mode="dark"] .badge.cancelled,
+html[data-mode="dark"] .badge.blocked,
+html[data-mode="dark"] .error {
+  background: #332422;
+  color: #e7b2a6;
+  border-color: #5a3832;
+}
+html[data-mode="dark"] .metric.alert {
+  background: #2a211c;
+  border-color: #5a4034;
+}
+html[data-mode="dark"] .progress {
+  background: #2e2c36;
+}
+html[data-mode="dark"] .instruction,
+html[data-mode="dark"] .form-callout,
+html[data-mode="dark"] .role-list label,
+html[data-mode="dark"] .space-list li {
+  background: var(--surface-2);
+  color: var(--muted);
+  border-color: var(--line);
+}
+html[data-mode="dark"] .modal-backdrop,
+html[data-mode="dark"] .drawer-backdrop {
+  background: #07060a99;
+}
+html[data-mode="dark"] .login {
+  background: var(--bg);
+}
+html[data-mode="dark"] .login-form h2,
+html[data-mode="dark"] .login-form > p,
+html[data-mode="dark"] .mini-label {
+  color: var(--ink);
+}
+html[data-mode="dark"] .login-form > p,
+html[data-mode="dark"] .mini-label {
+  color: var(--muted);
 }

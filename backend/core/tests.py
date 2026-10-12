@@ -1016,6 +1016,171 @@ class FlowTests(TestCase):
             expected=403,
         )
 
+    def test_account_settings_and_password(self):
+        saved = self.post(
+            "account/",
+            {
+                "name": "Filip Kosznik",
+                "email": "filip@example.com",
+                "phone": "500 100 200",
+                "street": "ul. Słoneczna 14",
+                "postal_code": "61-001",
+                "city": "Poznań",
+                "country": "Polska",
+                "language": "en",
+                "timezone": "Europe/Berlin",
+                "start_page": "orders",
+                "appearance": "dark",
+            },
+        )
+        self.assertEqual(saved.data["city"], "Poznań")
+        self.assertEqual(saved.data["language"], "en")
+        self.assertEqual(saved.data["appearance"], "dark")
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.first_name, "Filip Kosznik")
+        self.assertEqual(self.admin.email, "filip@example.com")
+        self.assertEqual(self.admin.profile.timezone, "Europe/Berlin")
+        me = self.client.get("/api/auth/me/")
+        self.assertEqual(me.data["user"]["street"], "ul. Słoneczna 14")
+        self.post(
+            "account/",
+            {
+                "name": "Filip",
+                "email": "nie-email",
+                "language": "pl",
+                "timezone": "Europe/Warsaw",
+                "start_page": "dashboard",
+                "appearance": "dark",
+            },
+            expected=400,
+        )
+        self.post(
+            "account/",
+            {
+                "name": "Filip",
+                "email": "filip@example.com",
+                "language": "pl",
+                "timezone": "Europe/Warsaw",
+                "start_page": "dashboard",
+                "appearance": "blue",
+            },
+            expected=400,
+        )
+        self.post(
+            "account/password/",
+            {
+                "current_password": "zle-haslo",
+                "password": "New-password-123!",
+                "password_repeat": "New-password-123!",
+            },
+            expected=400,
+        )
+        self.post(
+            "account/password/",
+            {
+                "current_password": "Test-password-123!",
+                "password": "New-password-123!",
+                "password_repeat": "inne-haslo-123!",
+            },
+            expected=400,
+        )
+        self.post(
+            "account/password/",
+            {
+                "current_password": "Test-password-123!",
+                "password": "New-password-123!",
+                "password_repeat": "New-password-123!",
+            },
+        )
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.check_password("New-password-123!"))
+        me = self.client.get("/api/auth/me/")
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.data["user"]["name"], "Filip Kosznik")
+
+    def test_admin_settings_workspaces_and_users(self):
+        sales = get_user_model().objects.create_user(
+            "sales-settings", password="Test-password-123!"
+        )
+        sales.groups.add(Group.objects.get_or_create(name="sales")[0])
+        self.client.force_login(sales)
+        self.post(
+            "organization/",
+            {"name": "Inna", "default_language": "pl", "theme": "plum"},
+            expected=403,
+        )
+        self.client.force_login(self.admin)
+        home = self.client.get("/api/state/")
+        self.assertEqual(home.data["organization"]["name"], "POPME")
+        self.assertEqual(home.data["organization"]["theme"], "plum")
+        self.assertEqual(len(home.data["workspaces"]), 1)
+        self.assertTrue(home.data["workspaces"][0]["primary"])
+        saved = self.post(
+            "organization/",
+            {
+                "name": "Popcornownia",
+                "default_language": "en",
+                "theme": "teal",
+            },
+        )
+        self.assertEqual(saved.data["name"], "Popcornownia")
+        self.post("organization/", {"name": "  ", "default_language": "pl", "theme": "plum"}, expected=400)
+        self.post(
+            "organization/",
+            {"name": "Popcornownia", "default_language": "xx", "theme": "teal"},
+            expected=400,
+        )
+        created = self.post("workspaces/", {"name": "Hala 2"})
+        self.post("workspaces/", {"name": "hala 2"}, expected=400)
+        primary = next(item for item in home.data["workspaces"] if item["primary"])
+        self.post(
+            "workspaces/",
+            {"id": primary["id"], "name": primary["name"], "active": False},
+            expected=400,
+        )
+        here = self.order(quantity=2, pickup=True)
+        self.assertEqual(here.workspace_id, primary["id"])
+        self.post("workspaces/current/", {"id": created.data["id"]})
+        away = self.client.get("/api/state/")
+        self.assertEqual(away.data["workspace_id"], created.data["id"])
+        self.assertNotIn(here.pk, [row["id"] for row in away.data["orders"]])
+        other = self.order(quantity=2, pickup=True)
+        self.assertEqual(other.workspace_id, created.data["id"])
+        self.post("workspaces/current/", {"id": primary["id"]})
+        back = self.client.get("/api/state/")
+        visible = [row["id"] for row in back.data["orders"]]
+        self.assertIn(here.pk, visible)
+        self.assertNotIn(other.pk, visible)
+        person = self.post(
+            "users/",
+            {
+                "username": "hala.user",
+                "name": "Hala User",
+                "password": "Test-password-123!",
+                "roles": ["production"],
+                "active": True,
+            },
+        )
+        account = get_user_model().objects.get(pk=person.data["id"])
+        self.assertEqual(account.profile.language, "en")
+        self.post(
+            "users/",
+            {
+                "id": account.pk,
+                "username": "hala.user",
+                "name": "Hala User",
+                "roles": ["production", "packing"],
+                "active": True,
+            },
+        )
+        account.refresh_from_db()
+        self.assertEqual(set(s.roles(account)), {"production", "packing"})
+        self.post(
+            "workspaces/",
+            {"id": created.data["id"], "name": "Hala 2", "active": False},
+        )
+        self.post("workspaces/current/", {"id": created.data["id"]}, expected=404)
+
 
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks required")
 class ConcurrencyTests(TransactionTestCase):

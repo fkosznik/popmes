@@ -23,6 +23,8 @@ import {
   LayoutDashboard,
   LogOut,
   Package,
+  Moon,
+  Sun,
   Truck,
   Pause,
   Play,
@@ -44,6 +46,7 @@ import {
   Boxes,
 } from "lucide-react";
 import { api, requestKey } from "./api";
+import { roleCopy, statusNames, t, zoneChoices, type Lang } from "./i18n";
 import type {
   User,
   State,
@@ -60,6 +63,19 @@ import type {
   Supplier,
 } from "./types";
 
+const themes = [
+  { id: "plum", name: "Śliwka", color: "#885cba" },
+  { id: "teal", name: "Morski", color: "#14627a" },
+  { id: "forest", name: "Las", color: "#2f7d4a" },
+  { id: "amber", name: "Bursztyn", color: "#b86a1a" },
+] as const;
+const roleHints: Record<string, string> = {
+  sales: "Klienci, zamówienia i wydanie",
+  production: "Kolejka produkcji",
+  packing: "Wysyłka gotowych zamówień",
+  manager: "Plan, korekty i cały obieg",
+  admin: "Katalog, konta i ustawienia organizacji",
+};
 const names: Record<string, string> = {
   draft: "Szkic",
   queued: "Do realizacji",
@@ -181,16 +197,20 @@ function groupShipping(tasks: Task[]) {
   });
 }
 const kg = (g: string | number) => fmt.format(Number(g) / 1000) + " kg";
+const clock = { lang: "pl" as Lang, zone: "Europe/Warsaw" };
+const dateLocale = () => (clock.lang === "en" ? "en-GB" : "pl-PL");
 const dt = (s: string | null) =>
   s
-    ? new Date(s).toLocaleString("pl-PL", {
-        timeZone: "Europe/Warsaw",
+    ? new Date(s).toLocaleString(dateLocale(), {
+        timeZone: clock.zone,
         day: "2-digit",
         month: "short",
         hour: "2-digit",
         minute: "2-digit",
       })
-    : "Brak terminu";
+    : clock.lang === "en"
+      ? "No date"
+      : "Brak terminu";
 const late = (o: Order) =>
   Boolean(
     o.due_at &&
@@ -246,18 +266,17 @@ function compareOrders(
 const localDate = (s: string | null) =>
   s
     ? new Date(s)
-        .toLocaleString("sv-SE", { timeZone: "Europe/Warsaw" })
+        .toLocaleString("sv-SE", { timeZone: clock.zone })
         .slice(0, 16)
         .replace(" ", "T")
     : "";
-// Inputs represent Warsaw local time; use Intl to calculate the correct UTC offset including DST.
+// Inputs represent the user's time zone; Intl supplies the UTC offset, including DST.
 function fromWarsaw(value: string) {
   if (!value) return null;
   const guess = new Date(value + "Z");
   const wall = new Date(
-    guess
-      .toLocaleString("sv-SE", { timeZone: "Europe/Warsaw" })
-      .replace(" ", "T") + "Z",
+    guess.toLocaleString("sv-SE", { timeZone: clock.zone }).replace(" ", "T") +
+      "Z",
   );
   return new Date(
     guess.getTime() - (wall.getTime() - guess.getTime()),
@@ -362,6 +381,36 @@ export default function App() {
     [mobile, setMobile] = useState(false),
     [users, setUsers] = useState<User[]>([]);
   const [packWeight, setPackWeight] = useState<number | null>(null);
+  const [account, setAccount] = useState<{
+    name: string;
+    email: string;
+    phone: string;
+    street: string;
+    postal_code: string;
+    city: string;
+    country: string;
+    language: Lang;
+    timezone: string;
+    start_page: string;
+    appearance: "light" | "dark";
+  } | null>(null);
+  const [passwords, setPasswords] = useState({
+    current_password: "",
+    password: "",
+    password_repeat: "",
+  });
+  const [orgForm, setOrgForm] = useState<{
+    name: string;
+    default_language: "pl" | "en";
+    theme: "plum" | "teal" | "forest" | "amber";
+  } | null>(null);
+  const [spaceForm, setSpaceForm] = useState<{
+    id?: number;
+    name: string;
+    active: boolean;
+    primary: boolean;
+  }>({ name: "", active: true, primary: false });
+  const startApplied = useRef(false);
   const [lines, setLines] = useState<OrderLine[]>([]);
   const [recipeLines, setRecipeLines] = useState<
     { stock_id: number; quantity: string }[]
@@ -429,11 +478,32 @@ export default function App() {
     };
   }, [user, focus, state]);
   useEffect(() => {
-    if (page === "users" && user)
+    if ((page === "admin" || page === "users") && user)
       api<User[]>("users/")
         .then(setUsers)
         .catch((e) => setError(errorText(e)));
   }, [page, state]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = state?.organization?.theme || "plum";
+  }, [state?.organization?.theme]);
+  useEffect(() => {
+    const chosen = page === "account" && account ? account.appearance : user?.appearance;
+    document.documentElement.dataset.mode = chosen === "dark" ? "dark" : "light";
+  }, [user?.appearance, account, page]);
+  useEffect(() => {
+    if (page !== "admin") {
+      setOrgForm(null);
+      return;
+    }
+    if (!state?.organization || orgForm) return;
+    const theme = state.organization.theme;
+    setOrgForm({
+      name: state.organization.name,
+      default_language: state.organization.default_language === "en" ? "en" : "pl",
+      theme:
+        theme === "teal" || theme === "forest" || theme === "amber" ? theme : "plum",
+    });
+  }, [page, state, orgForm]);
   useEffect(() => {
     const f = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !mutationLock.current) {
@@ -445,6 +515,53 @@ export default function App() {
     window.addEventListener("keydown", f);
     return () => window.removeEventListener("keydown", f);
   }, []);
+  useEffect(() => {
+    if (!user || startApplied.current) return;
+    startApplied.current = true;
+    const next = user.start_page;
+    if (!next || next === "dashboard") return;
+    const has = (...roles: string[]) => user.roles.some((r) => roles.includes(r));
+    const allowed =
+      next === "orders" || next === "customers"
+        ? has("sales", "manager")
+        : next === "production"
+          ? has("production", "manager")
+          : next === "shipping"
+            ? has("packing", "manager")
+            : next === "stock"
+              ? has("manager", "sales", "production", "packing", "admin")
+              : next === "catalog"
+                ? has("admin", "manager", "sales")
+                : next === "users" || next === "admin"
+                ? has("admin")
+                : false;
+    if (allowed) setPage(next === "users" ? "admin" : next);
+  }, [user]);
+  useEffect(() => {
+    if (page !== "account") {
+      setAccount(null);
+      return;
+    }
+    if (!user || account) return;
+    setAccount({
+      name: user.name,
+      email: user.email || "",
+      phone: user.phone || "",
+      street: user.street || "",
+      postal_code: user.postal_code || "",
+      city: user.city || "",
+      country: user.country || "",
+      language: user.language === "en" ? "en" : "pl",
+      timezone: user.timezone || "Europe/Warsaw",
+      start_page: user.start_page || "dashboard",
+      appearance: user.appearance === "dark" ? "dark" : "light",
+    });
+  }, [page, user, account]);
+  const lang: Lang = user?.language === "en" ? "en" : "pl";
+  clock.lang = lang;
+  clock.zone = user?.timezone || "Europe/Warsaw";
+  Object.assign(names, statusNames[lang]);
+  Object.assign(roleNames, roleCopy[lang]);
   const perform = async (path: string, data: unknown, close = true) => {
     if (mutationLock.current) return;
     mutationLock.current = true;
@@ -466,7 +583,7 @@ export default function App() {
       const result = await api<{ id?: number }>(path, data, key);
       retryKeys.current.delete(fingerprint);
       if (close) setModal(null);
-      setToast("Zapisano zmiany");
+      setToast(t(lang, "saved"));
       await load();
       return result;
     } catch (e) {
@@ -477,6 +594,28 @@ export default function App() {
       mutationLock.current = false;
     }
   };
+  function toggleAppearance() {
+    if (!user) return;
+    const next = user.appearance === "dark" ? "light" : "dark";
+    if (account) setAccount({ ...account, appearance: next });
+    void perform(
+      "account/",
+      {
+        name: user.name,
+        email: user.email || "",
+        phone: user.phone || "",
+        street: user.street || "",
+        postal_code: user.postal_code || "",
+        city: user.city || "",
+        country: user.country || "",
+        language: user.language === "en" ? "en" : "pl",
+        timezone: user.timezone || "Europe/Warsaw",
+        start_page: user.start_page || "dashboard",
+        appearance: next,
+      },
+      false,
+    );
+  }
   function go(p: string) {
     setPage(p);
     setFilter("all");
@@ -626,44 +765,44 @@ export default function App() {
       </div>
     );
   const nav = [
-    { id: "dashboard", title: "Przegląd", icon: LayoutDashboard, show: true },
+    { id: "dashboard", title: t(lang, "overview"), icon: LayoutDashboard, show: true },
     {
       id: "orders",
-      title: "Zamówienia",
+      title: t(lang, "orders"),
       icon: ClipboardList,
       show: can("sales", "manager"),
     },
     {
       id: "production",
-      title: "Produkcja",
+      title: t(lang, "production"),
       icon: Factory,
       show: can("production", "manager"),
     },
     {
       id: "shipping",
-      title: "Wysyłka",
+      title: t(lang, "shipping"),
       icon: Truck,
       show: can("packing", "manager"),
     },
     {
       id: "stock",
-      title: "Magazyn",
+      title: t(lang, "stock"),
       icon: Warehouse,
       show: can("manager", "sales", "production", "packing", "admin"),
     },
     {
       id: "catalog",
-      title: "Katalog produktów",
+      title: t(lang, "catalog"),
       icon: Boxes,
       show: can("admin", "manager", "sales"),
     },
     {
       id: "customers",
-      title: "Klienci",
+      title: t(lang, "customers"),
       icon: Users,
       show: can("sales", "manager"),
     },
-    { id: "users", title: "Zespół", icon: Settings2, show: can("admin") },
+    { id: "admin", title: t(lang, "admin"), icon: Settings2, show: can("admin") },
   ];
   const orders = state?.orders || [],
     tasks = state?.tasks || [];
@@ -787,7 +926,10 @@ export default function App() {
       (filter === "all" ? card.status !== "done" : card.status === filter)
     );
   });
-  const title = nav.find((n) => n.id === page)?.title || "Przegląd";
+  const title =
+    page === "account"
+      ? t(lang, "settings")
+      : nav.find((n) => n.id === page)?.title || t(lang, "overview");
   const action = (path: string, data: unknown = {}) =>
     void perform(path, data, false);
   const orderTable = (list: Order[], sortable = false) =>
@@ -899,6 +1041,19 @@ export default function App() {
         text="Dodaj zamówienie albo zmień filtry wyszukiwania."
       />
     );
+  const spaces = (state?.workspaces || []).filter((item) => item.active);
+  const currentSpace =
+    spaces.find((item) => item.id === state?.workspace_id) || spaces[0];
+  const orgName = state?.organization?.name || "POPME";
+  const chooseSpace = (id: number) => {
+    void api("workspaces/current/", { id }, requestKey())
+      .then(() => {
+        setSelected(null);
+        setFocus(null);
+        return load();
+      })
+      .catch((err) => setError(errorText(err)));
+  };
   return (
     <div className="app">
       <aside className={"sidebar " + (mobile ? "mobile-open" : "")}>
@@ -909,9 +1064,28 @@ export default function App() {
           POP<span>MES</span>
         </div>
         <div className="workspace">
-          <span className="workspace-icon">P</span>
+          <span className="workspace-icon">
+            {(currentSpace?.name || orgName).slice(0, 1).toUpperCase()}
+          </span>
           <div>
-            POPME<small>Przestrzeń produkcyjna</small>
+            {spaces.length > 1 ? (
+              <select
+                aria-label="Przestrzeń produkcyjna"
+                value={currentSpace?.id || ""}
+                onChange={(e) => chooseSpace(Number(e.target.value))}
+              >
+                {spaces.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              currentSpace?.name || orgName
+            )}
+            <small>
+              {spaces.length > 1 ? orgName : "Przestrzeń produkcyjna"}
+            </small>
           </div>
           <span className="online-dot" />
         </div>
@@ -942,12 +1116,24 @@ export default function App() {
           </div>
         </div>
         <div className="user">
-          <div className="avatar">{user.name.slice(0, 2).toUpperCase()}</div>
-          <div>
-            <strong>{user.name}</strong>
-            <small>{user.roles.map((r) => roleNames[r]).join(", ")}</small>
-          </div>
-          <button title="Wyloguj" aria-label="Wyloguj" onClick={logoutClick}>
+          <button
+            type="button"
+            className={"user-open" + (page === "account" ? " selected" : "")}
+            aria-label={t(lang, "openSettings")}
+            onClick={() => go("account")}
+          >
+            <span className="avatar">{user.name.slice(0, 2).toUpperCase()}</span>
+            <span>
+              <strong>{user.name}</strong>
+              <small>{user.roles.map((r) => roleNames[r]).join(", ")}</small>
+            </span>
+          </button>
+          <button
+            className="user-logout"
+            title={t(lang, "logout")}
+            aria-label={t(lang, "logout")}
+            onClick={logoutClick}
+          >
             <LogOut size={17} />
           </button>
         </div>
@@ -962,18 +1148,29 @@ export default function App() {
             <Menu />
           </button>
           <div className="breadcrumb">
-            Przestrzeń POPME <ChevronRight size={13} /> <strong>{title}</strong>
+            {orgName} <ChevronRight size={13} /> <strong>{title}</strong>
           </div>
           <div className={"sync " + (offline ? "bad" : "")}>
             <span />
             {offline ? "Brak synchronizacji" : "Dane na bieżąco"}
           </div>
+          <button
+            type="button"
+            className="mode-toggle"
+            aria-pressed={user.appearance === "dark"}
+            aria-label={
+              user.appearance === "dark" ? t(lang, "light") : t(lang, "dark")
+            }
+            onClick={toggleAppearance}
+          >
+            {user.appearance === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
           <span className="top-date">
-            {new Date().toLocaleDateString("pl-PL", {
+            {new Date().toLocaleDateString(dateLocale(), {
               day: "numeric",
               month: "long",
               year: "numeric",
-              timeZone: "Europe/Warsaw",
+              timeZone: clock.zone,
             })}
           </span>
         </header>
@@ -982,26 +1179,33 @@ export default function App() {
             <div>
               <div className="eyebrow">
                 {page === "dashboard"
-                  ? "WSZYSTKO NA SWOIM MIEJSCU"
-                  : "POPME / OPERACJE"}
+                  ? t(lang, "eyebrowHome")
+                  : t(lang, "eyebrowOps")}
               </div>
               <h1>
                 {page === "dashboard"
-                  ? `Cześć, ${user.name.split(" ")[0]}.`
+                  ? t(lang, "hello").replace(
+                      "{name}",
+                      user.name.split(" ")[0],
+                    )
                   : title}
               </h1>
               <p>
                 {page === "dashboard"
-                  ? "Sprawdź plan, zadbaj o tempo i ruszamy z produkcją."
-                  : page === "production"
-                    ? "Zgłaszasz gotowe opakowania popcornu, nie kilogramy luzem."
-                    : page === "shipping"
-                      ? "Całe zamówienie z adresem i kontaktem. Jednym przyciskiem oznaczasz wysyłkę."
-                      : page === "orders"
-                        ? "Od przyjęcia zamówienia do wysłanej przesyłki."
-                        : page === "stock"
-                          ? "Kategorie, stany i przyjęcia towaru. Produkty z katalogu synchronizują się same."
-                          : "Wspólne dane, które porządkują codzienną pracę."}
+                  ? t(lang, "blurbDashboard")
+                  : page === "account"
+                    ? t(lang, "settingsLead")
+                    : page === "production"
+                      ? t(lang, "blurbProduction")
+                      : page === "shipping"
+                        ? t(lang, "blurbShipping")
+                        : page === "orders"
+                          ? t(lang, "blurbOrders")
+                          : page === "stock"
+                            ? t(lang, "blurbStock")
+                            : page === "admin"
+                              ? t(lang, "blurbAdmin")
+                              : t(lang, "blurbDefault")}
               </p>
             </div>
             {can("sales", "manager") &&
@@ -1010,12 +1214,12 @@ export default function App() {
                   className="primary"
                   onClick={() => open({ kind: "order" })}
                 >
-                  <Plus size={17} /> Nowe zamówienie
+                  <Plus size={17} /> {t(lang, "newOrder")}
                 </button>
               )}
-            {["catalog", "customers", "users"].includes(page) &&
+            {["catalog", "customers", "admin"].includes(page) &&
               can(
-                ...(page === "users"
+                ...(page === "admin"
                   ? ["admin"]
                   : page === "customers"
                     ? ["sales", "manager"]
@@ -1025,13 +1229,13 @@ export default function App() {
                   className="primary"
                   onClick={() =>
                     open({
-                      kind: page === "users" ? "user" : "catalog",
+                      kind: page === "admin" ? "user" : "catalog",
                       catalog: page === "customers" ? "customers" : catalogTab,
                     })
                   }
                 >
                   <Plus size={17} />
-                  {page === "users"
+                  {page === "admin"
                     ? "Dodaj osobę"
                     : page === "customers"
                       ? "Dodaj klienta"
@@ -1066,6 +1270,273 @@ export default function App() {
             <div className="loading-inline">Pobieramy dane…</div>
           ) : (
             <>
+              {page === "account" && account && (
+                <div className="account-page">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void perform("account/", account, false);
+                    }}
+                  >
+                    <section className="panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>{t(lang, "yourData")}</h2>
+                        </div>
+                      </div>
+                      <div className="account-body">
+                    <div className="form-grid">
+                      <Field label={t(lang, "name")}>
+                        <input
+                          required
+                          value={account.name}
+                          onChange={(e) =>
+                            setAccount({ ...account, name: e.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field label={t(lang, "login")}>
+                        <input value={user.username} readOnly />
+                      </Field>
+                      <Field label={t(lang, "email")}>
+                        <input
+                          type="email"
+                          value={account.email}
+                          autoComplete="email"
+                          onChange={(e) =>
+                            setAccount({ ...account, email: e.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field label={t(lang, "phone")}>
+                        <input
+                          value={account.phone}
+                          autoComplete="tel"
+                          onChange={(e) =>
+                            setAccount({ ...account, phone: e.target.value })
+                          }
+                        />
+                      </Field>
+                    </div>
+                      </div>
+                    </section>
+                    <section className="panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>{t(lang, "address")}</h2>
+                          <p>{t(lang, "addressHint")}</p>
+                        </div>
+                      </div>
+                      <div className="account-body">
+                    <div className="form-grid account-address">
+                      <Field label={t(lang, "street")} wide>
+                        <input
+                          value={account.street}
+                          autoComplete="street-address"
+                          onChange={(e) =>
+                            setAccount({ ...account, street: e.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field label={t(lang, "postal")}>
+                        <input
+                          value={account.postal_code}
+                          autoComplete="postal-code"
+                          onChange={(e) =>
+                            setAccount({
+                              ...account,
+                              postal_code: e.target.value,
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label={t(lang, "city")}>
+                        <input
+                          value={account.city}
+                          autoComplete="address-level2"
+                          onChange={(e) =>
+                            setAccount({ ...account, city: e.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field label={t(lang, "country")}>
+                        <input
+                          value={account.country}
+                          autoComplete="country-name"
+                          onChange={(e) =>
+                            setAccount({ ...account, country: e.target.value })
+                          }
+                        />
+                      </Field>
+                    </div>
+                      </div>
+                    </section>
+                    <section className="panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>{t(lang, "preferences")}</h2>
+                          <p>{t(lang, "languageHint")}</p>
+                        </div>
+                      </div>
+                      <div className="account-body">
+                    <div className="form-grid account-prefs">
+                      <Field label={t(lang, "language")}>
+                        <select
+                          value={account.language}
+                          onChange={(e) =>
+                            setAccount({
+                              ...account,
+                              language: e.target.value === "en" ? "en" : "pl",
+                            })
+                          }
+                        >
+                          <option value="pl">Polski</option>
+                          <option value="en">English</option>
+                        </select>
+                      </Field>
+                      <Field label={t(lang, "timezone")}>
+                        <select
+                          value={account.timezone}
+                          onChange={(e) =>
+                            setAccount({ ...account, timezone: e.target.value })
+                          }
+                        >
+                          {zoneChoices.map((zone) => (
+                            <option key={zone.id} value={zone.id}>
+                              {lang === "en" ? zone.en : zone.pl}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label={t(lang, "startPage")}>
+                        <select
+                          value={account.start_page}
+                          onChange={(e) =>
+                            setAccount({
+                              ...account,
+                              start_page: e.target.value,
+                            })
+                          }
+                        >
+                          {nav
+                            .filter((item) => item.show)
+                            .map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.title}
+                              </option>
+                            ))}
+                        </select>
+                      </Field>
+                      <Field label={t(lang, "appearance")} wide>
+                        <div className="appearance-choices">
+                          <button
+                            type="button"
+                            aria-pressed={account.appearance !== "dark"}
+                            onClick={() =>
+                              setAccount({ ...account, appearance: "light" })
+                            }
+                          >
+                            <Sun size={16} /> {t(lang, "light")}
+                          </button>
+                          <button
+                            type="button"
+                            aria-pressed={account.appearance === "dark"}
+                            onClick={() =>
+                              setAccount({ ...account, appearance: "dark" })
+                            }
+                          >
+                            <Moon size={16} /> {t(lang, "dark")}
+                          </button>
+                        </div>
+                      </Field>
+                    </div>
+                    <div className="account-actions">
+                      <button className="primary" type="submit" disabled={busy}>
+                        {t(lang, "save")}
+                      </button>
+                    </div>
+                      </div>
+                    </section>
+                  </form>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void perform("account/password/", passwords, false).then(
+                        (result) => {
+                          if (result)
+                            setPasswords({
+                              current_password: "",
+                              password: "",
+                              password_repeat: "",
+                            });
+                        },
+                      );
+                    }}
+                  >
+                    <section className="panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>{t(lang, "passwordSection")}</h2>
+                          <p>{t(lang, "passwordHint")}</p>
+                        </div>
+                      </div>
+                      <div className="account-body">
+                    <div className="form-grid">
+                      <Field label={t(lang, "currentPassword")} wide>
+                        <input
+                          type="password"
+                          required
+                          autoComplete="current-password"
+                          value={passwords.current_password}
+                          onChange={(e) =>
+                            setPasswords({
+                              ...passwords,
+                              current_password: e.target.value,
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label={t(lang, "newPassword")}>
+                        <input
+                          type="password"
+                          required
+                          minLength={10}
+                          autoComplete="new-password"
+                          value={passwords.password}
+                          onChange={(e) =>
+                            setPasswords({
+                              ...passwords,
+                              password: e.target.value,
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label={t(lang, "repeatPassword")}>
+                        <input
+                          type="password"
+                          required
+                          minLength={10}
+                          autoComplete="new-password"
+                          value={passwords.password_repeat}
+                          onChange={(e) =>
+                            setPasswords({
+                              ...passwords,
+                              password_repeat: e.target.value,
+                            })
+                          }
+                        />
+                      </Field>
+                    </div>
+                    <div className="account-actions">
+                      <button className="primary" type="submit" disabled={busy}>
+                        {t(lang, "changePassword")}
+                      </button>
+                    </div>
+                      </div>
+                    </section>
+                  </form>
+                </div>
+              )}
               {page === "dashboard" && (
                 <>
                   <div className="metrics">
@@ -1939,47 +2410,244 @@ export default function App() {
                   )}
                 </section>
               )}
-              {page === "users" && (
-                <section className="panel">
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Osoba</th>
-                          <th>Login</th>
-                          <th>Role</th>
-                          <th>Status</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {users.map((u) => (
-                          <tr key={u.id}>
-                            <td>
-                              <strong>{u.name}</strong>
-                            </td>
-                            <td>{u.username}</td>
-                            <td>
-                              {u.roles.map((r) => roleNames[r]).join(", ")}
-                            </td>
-                            <td>{u.active ? "Aktywne konto" : "Nieaktywne"}</td>
-                            <td>
-                              <button
-                                className="icon-button"
-                                aria-label={`Edytuj ${u.name}`}
-                                onClick={() =>
-                                  open({ kind: "user", entity: u })
-                                }
-                              >
-                                <Pencil size={15} />
-                              </button>
-                            </td>
-                          </tr>
+              {page === "admin" && orgForm && (
+                <div className="account-page">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void perform("organization/", orgForm, false);
+                    }}
+                  >
+                    <section className="panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>Organizacja</h2>
+                          <p>
+                            Nazwa jest widoczna w menu. Domyślny język dostają
+                            nowe konta. Każdy może zmienić swój w ustawieniach.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="account-body">
+                        <div className="form-grid">
+                          <Field label="Nazwa organizacji">
+                            <input
+                              required
+                              value={orgForm.name}
+                              onChange={(e) =>
+                                setOrgForm({ ...orgForm, name: e.target.value })
+                              }
+                            />
+                          </Field>
+                          <Field label="Domyślny język aplikacji">
+                            <select
+                              value={orgForm.default_language}
+                              onChange={(e) =>
+                                setOrgForm({
+                                  ...orgForm,
+                                  default_language:
+                                    e.target.value === "en" ? "en" : "pl",
+                                })
+                              }
+                            >
+                              <option value="pl">Polski</option>
+                              <option value="en">English</option>
+                            </select>
+                          </Field>
+                        </div>
+                      </div>
+                    </section>
+                    <section className="panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>Motyw kolorów</h2>
+                          <p>Kolor przycisków i akcentów w całej aplikacji.</p>
+                        </div>
+                      </div>
+                      <div className="account-body">
+                        <div className="theme-choices">
+                          {themes.map((theme) => (
+                            <button
+                              key={theme.id}
+                              type="button"
+                              aria-pressed={orgForm.theme === theme.id}
+                              onClick={() =>
+                                setOrgForm({ ...orgForm, theme: theme.id })
+                              }
+                            >
+                              <span
+                                className="theme-swatch"
+                                style={{ background: theme.color }}
+                              />
+                              {theme.name}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="account-actions">
+                          <button className="primary" type="submit" disabled={busy}>
+                            Zapisz organizację
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+                  </form>
+                  <section className="panel">
+                    <div className="panel-head">
+                      <div>
+                        <h2>Przestrzenie produkcyjne</h2>
+                        <p>
+                          Każda przestrzeń ma własne zamówienia i produkcję.
+                          Nowa startuje pusta. Domyślnej nie wyłączysz.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="account-body">
+                      <ul className="space-list">
+                        {(state?.workspaces || []).map((item) => (
+                          <li key={item.id}>
+                            <strong>{item.name}</strong>
+                            {item.primary && <span className="tag">Domyślna</span>}
+                            {!item.active && (
+                              <span className="tag">Nieaktywna</span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSpaceForm({
+                                  id: item.id,
+                                  name: item.name,
+                                  active: item.active,
+                                  primary: item.primary,
+                                })
+                              }
+                            >
+                              Edytuj
+                            </button>
+                          </li>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
+                      </ul>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void perform(
+                            "workspaces/",
+                            {
+                              ...(spaceForm.id ? { id: spaceForm.id } : {}),
+                              name: spaceForm.name,
+                              ...(spaceForm.id ? { active: spaceForm.active } : {}),
+                            },
+                            false,
+                          ).then((result) => {
+                            if (result)
+                              setSpaceForm({
+                                name: "",
+                                active: true,
+                                primary: false,
+                              });
+                          });
+                        }}
+                      >
+                        <div className="form-grid">
+                          <Field label="Nazwa przestrzeni">
+                            <input
+                              required
+                              value={spaceForm.name}
+                              onChange={(e) =>
+                                setSpaceForm({
+                                  ...spaceForm,
+                                  name: e.target.value,
+                                })
+                              }
+                            />
+                          </Field>
+                          {spaceForm.id && !spaceForm.primary && (
+                            <label className="check-field">
+                              <input
+                                type="checkbox"
+                                checked={spaceForm.active}
+                                onChange={(e) =>
+                                  setSpaceForm({
+                                    ...spaceForm,
+                                    active: e.target.checked,
+                                  })
+                                }
+                              />
+                              Przestrzeń aktywna
+                            </label>
+                          )}
+                        </div>
+                        <div className="account-actions">
+                          {spaceForm.id && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSpaceForm({
+                                  name: "",
+                                  active: true,
+                                  primary: false,
+                                })
+                              }
+                            >
+                              Anuluj
+                            </button>
+                          )}
+                          <button className="primary" type="submit" disabled={busy}>
+                            {spaceForm.id ? "Zapisz przestrzeń" : "Dodaj przestrzeń"}
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </section>
+                  <section className="panel">
+                    <div className="panel-head">
+                      <div>
+                        <h2>Użytkownicy i uprawnienia</h2>
+                        <p>
+                          Dodaj konto i zaznacz role. Jedna osoba może mieć ich
+                          kilka. Edycja zmienia login, hasło, role i aktywność.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Osoba</th>
+                            <th>Login</th>
+                            <th>Role</th>
+                            <th>Status</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {users.map((u) => (
+                            <tr key={u.id}>
+                              <td>
+                                <strong>{u.name}</strong>
+                              </td>
+                              <td>{u.username}</td>
+                              <td>
+                                {u.roles.map((r) => roleNames[r]).join(", ")}
+                              </td>
+                              <td>{u.active ? "Aktywne konto" : "Nieaktywne"}</td>
+                              <td>
+                                <button
+                                  className="icon-button"
+                                  aria-label={`Edytuj ${u.name}`}
+                                  onClick={() =>
+                                    open({ kind: "user", entity: u })
+                                  }
+                                >
+                                  <Pencil size={15} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
               )}
               {page === "stock" && (
                 <>
@@ -3646,8 +4314,11 @@ export default function App() {
                       />
                     </Field>
                   </div>
-                  <h3>Role użytkownika</h3>
-                  <div className="role-checkboxes">
+                  <h3>Uprawnienia</h3>
+                  <p className="form-help">
+                    Zaznacz, co ta osoba może robić. Role możesz później zmienić.
+                  </p>
+                  <div className="role-list">
                     {Object.entries(roleNames).map(([k, v]) => (
                       <label key={k}>
                         <input
@@ -3658,7 +4329,10 @@ export default function App() {
                             modal.entity as User
                           )?.roles.includes(k)}
                         />
-                        {v}
+                        <span>
+                          <strong>{v}</strong>
+                          <small>{roleHints[k]}</small>
+                        </span>
                       </label>
                     ))}
                   </div>

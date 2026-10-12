@@ -1,7 +1,7 @@
 """Business operations. Call under transaction.atomic with the order row locked."""
 
 from decimal import Decimal, InvalidOperation
-from django.db.models import Max, Sum
+from django.db.models import Max, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from .models import (
@@ -21,13 +21,56 @@ from .models import (
     StockMove,
     StockCategory,
     Order,
+    Organization,
+    Workspace,
+    Profile,
     Supplier,
     Recipe,
     RecipeLine,
 )
 
 ROLES = ["sales", "production", "packing", "manager", "admin"]
+THEMES = {"plum", "teal", "forest", "amber"}
 ZERO = Decimal("0")
+
+
+def organization():
+    org = Organization.objects.order_by("id").first()
+    if org is None:
+        org = Organization.objects.create()
+    return org
+
+
+def primary_workspace():
+    space = Workspace.objects.filter(primary=True).first()
+    if space is not None:
+        return space
+    space = Workspace.objects.order_by("id").first()
+    if space is not None:
+        return space
+    return Workspace.objects.create(name="POPME", primary=True, active=True)
+
+
+def current_workspace(user):
+    profile = (
+        Profile.objects.select_related("current_workspace").filter(user=user).first()
+    )
+    chosen = profile.current_workspace if profile else None
+    if chosen is not None and chosen.active:
+        return chosen
+    return primary_workspace()
+
+
+def workspace_q(space, prefix=""):
+    field = f"{prefix}workspace" if prefix else "workspace"
+    if space.primary:
+        return Q(**{field: space}) | Q(**{f"{field}__isnull": True})
+    return Q(**{field: space})
+
+
+def workspace_filter(user, prefix=""):
+    space = current_workspace(user)
+    return workspace_q(space, prefix), space
 
 
 def roles(user):

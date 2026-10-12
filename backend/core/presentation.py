@@ -1,6 +1,6 @@
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
-from .models import Batch
+from .models import Batch, Profile, Workspace
 from .services import (
     status,
     roles,
@@ -12,11 +12,46 @@ from .services import (
 )
 
 
+def organization_data(org):
+    return {
+        "name": org.name,
+        "default_language": org.default_language,
+        "theme": org.theme,
+    }
+
+
+def workspace_data(space):
+    return {
+        "id": space.pk,
+        "name": space.name,
+        "active": space.active,
+        "primary": space.primary,
+    }
+
+
+def workspaces_data():
+    return [workspace_data(space) for space in Workspace.objects.order_by("id")]
+
+
 def user_data(user):
+    try:
+        profile = user.profile
+    except ObjectDoesNotExist:
+        profile = Profile.objects.create(user=user)
     return {
         "id": user.pk,
         "username": user.username,
         "name": user.first_name or user.username,
+        "email": user.email,
+        "phone": profile.phone,
+        "street": profile.street,
+        "postal_code": profile.postal_code,
+        "city": profile.city,
+        "country": profile.country,
+        "language": profile.language,
+        "timezone": profile.timezone,
+        "start_page": profile.start_page,
+        "appearance": profile.appearance if profile.appearance == "dark" else "light",
         "roles": roles(user),
         "active": user.is_active,
     }

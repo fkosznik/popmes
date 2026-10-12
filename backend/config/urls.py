@@ -28,4 +28,9 @@ urlpatterns = [
     path("api/suppliers/<int:pk>/", v.supplier_update),
     path("api/recipes/", v.recipe_save),
     path("api/users/", v.users),
+    path("api/organization/", v.organization_update),
+    path("api/workspaces/", v.workspace_save),
+    path("api/workspaces/current/", v.workspace_select),
+    path("api/account/", v.account_update),
+    path("api/account/password/", v.account_password),
 ]

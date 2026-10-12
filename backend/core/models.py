@@ -67,6 +67,13 @@ class Order(models.Model):
     cancelled_at = models.DateTimeField(null=True)
     hold_reason = models.TextField(blank=True)
     version = models.PositiveIntegerField(default=1)
+    workspace = models.ForeignKey(
+        "Workspace",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="orders",
+    )
 
     @property
     def number(self):
@@ -348,6 +355,46 @@ class StockMove(models.Model):
         "Report", null=True, blank=True, on_delete=models.PROTECT
     )
     created_at = models.DateTimeField(default=timezone.now)
+
+
+class Organization(models.Model):
+    name = models.CharField(max_length=80, default="POPME")
+    default_language = models.CharField(max_length=5, default="pl")
+    theme = models.CharField(max_length=20, default="plum")
+
+
+class Workspace(models.Model):
+    name = models.CharField(max_length=80, unique=True)
+    active = models.BooleanField(default=True)
+    primary = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["primary"],
+                condition=Q(primary=True),
+                name="one_primary_workspace",
+            )
+        ]
+
+
+class Profile(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile"
+    )
+    phone = models.CharField(max_length=40, blank=True)
+    street = models.CharField(max_length=180, blank=True)
+    postal_code = models.CharField(max_length=20, blank=True)
+    city = models.CharField(max_length=80, blank=True)
+    country = models.CharField(max_length=80, blank=True, default="Polska")
+    language = models.CharField(max_length=5, default="pl")
+    timezone = models.CharField(max_length=64, default="Europe/Warsaw")
+    start_page = models.CharField(max_length=20, default="dashboard")
+    appearance = models.CharField(max_length=10, default="light")
+    current_workspace = models.ForeignKey(
+        Workspace, null=True, blank=True, on_delete=models.SET_NULL, related_name="members"
+    )
 
 
 class RequestReceipt(models.Model):
