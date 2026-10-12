@@ -28,4 +28,20 @@ Test przesyłania grafiki podaje teraz zapisany adres kuriera. Test równoczesne
 
 ## Weryfikacja lokalna
 
-31 testów na SQLite: 28 zaliczonych, 1 niepowodzenie opisane powyżej, 2 pominięte testy współbieżności wymagające PostgreSQL. Wynik PostgreSQL i kolejnych etapów należy odczytać w GitHub Actions.
+37 testów na SQLite: 34 zaliczone, 1 niepowodzenie opisane powyżej, 2 pominięte testy współbieżności wymagające PostgreSQL. Wynik PostgreSQL i kolejnych etapów należy odczytać w GitHub Actions.
+
+## Dodatkowe scenariusze inspirowane projektami open source
+
+Przejrzano rzeczywiste testy, a poniższe scenariusze napisano niezależnie dla API POPMES:
+- [ERPNext — rezerwacje](https://github.com/frappe/erpnext/blob/develop/erpnext/stock/doctype/stock_reservation_entry/test_stock_reservation_entry.py): przywrócenie rezerwacji po cofnięciu dostawy, ochrona zapasu innego zamówienia, zwolnienie i ponowna rezerwacja.
+- [InvenTree — produkcja](https://github.com/inventree/InvenTree/blob/master/src/backend/InvenTree/build/tests.py): anulowanie zlecenia produkcji.
+
+Dodane testy:
+1. Cofnięcie wysyłki przywraca stan i rezerwację; inne zamówienie nie przejmuje tego zapasu.
+2. Powtórna korekta z nowym kluczem żądania nie tworzy dodatkowego zapasu ani ruchów.
+3. Anulowanie po częściowej wysyłce uwalnia wyłącznie niewysłane opakowania.
+4. Anulowanego zamówienia nie można ponownie rozpocząć ani wysłać.
+5. Inna gramatura tego samego smaku nie pokrywa zapotrzebowania.
+6. Brak drugiego składnika wycofuje również rozchód pierwszego, raport i przyrost gotowych opakowań.
+
+Wszystkie sześć dodatkowych testów przeszło lokalnie. Test izolacji logo nadal wykrywa znany błąd. Testy współbieżności pozostają do wykonania na PostgreSQL w Actions.
