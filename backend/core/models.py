@@ -56,7 +56,7 @@ class Order(models.Model):
     delivery_address_id = models.CharField(max_length=64, blank=True)
     due_at = models.DateTimeField(null=True, blank=True)
     priority = models.CharField(max_length=10, default="normal")
-    delivery = models.CharField(max_length=15, default="pickup")
+    delivery = models.CharField(max_length=15, default="courier")
     address = models.TextField(blank=True)
     production_notes = models.TextField(blank=True)
     packing_notes = models.TextField(blank=True)
@@ -84,12 +84,30 @@ class Item(models.Model):
     custom_label = models.BooleanField(default=False)
     instruction = models.TextField(blank=True)
     quantity = models.PositiveIntegerField()
+    produced = models.PositiveIntegerField(default=0)
+    allocated = models.PositiveIntegerField(default=0)
     packed = models.PositiveIntegerField(default=0)
 
     class Meta:
         constraints = [
             models.CheckConstraint(
                 condition=Q(quantity__gt=0), name="item_positive_qty"
+            ),
+            models.CheckConstraint(
+                condition=Q(produced__lte=models.F("quantity")),
+                name="item_produced_lte_qty",
+            ),
+            models.CheckConstraint(
+                condition=Q(allocated__lte=models.F("quantity")),
+                name="item_allocated_lte_qty",
+            ),
+            models.CheckConstraint(
+                condition=Q(produced__lte=models.F("quantity") - models.F("allocated")),
+                name="item_covered_lte_qty",
+            ),
+            models.CheckConstraint(
+                condition=Q(packed__lte=models.F("allocated") + models.F("produced")),
+                name="item_shipped_lte_ready",
             ),
             models.CheckConstraint(
                 condition=Q(packed__lte=models.F("quantity")),
@@ -100,16 +118,27 @@ class Item(models.Model):
 
 class Task(models.Model):
     order = models.ForeignKey(Order, related_name="tasks", on_delete=models.CASCADE)
-    kind = models.CharField(max_length=12)  # production / packing
+    kind = models.CharField(max_length=12)  # production / shipping
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     product_name = models.CharField(max_length=160)
     instruction = models.TextField(blank=True)
-    item = models.OneToOneField(Item, null=True, blank=True, on_delete=models.CASCADE)
+    item = models.ForeignKey(
+        Item, null=True, blank=True, related_name="tasks", on_delete=models.CASCADE
+    )
     target_g = mass(default=0)
     produced_g = mass(default=0)
     started_at = models.DateTimeField(null=True)
     hold_reason = models.TextField(blank=True)
     supplemental = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind", "item"],
+                condition=Q(item__isnull=False),
+                name="one_task_per_item_kind",
+            )
+        ]
 
 
 class Batch(models.Model):
@@ -185,6 +214,29 @@ class Movement(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
 
+class Shipment(models.Model):
+    order = models.ForeignKey(Order, related_name="shipments", on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    address = models.TextField(blank=True)
+    note = models.TextField(blank=True)
+
+    @property
+    def number(self):
+        return f"PRZ-{timezone.localtime(self.created_at).year}-{self.pk:05d}"
+
+
+class ShipmentLine(models.Model):
+    shipment = models.ForeignKey(
+        Shipment, related_name="lines", on_delete=models.CASCADE
+    )
+    item = models.ForeignKey(Item, related_name="shipment_lines", on_delete=models.PROTECT)
+    units = models.PositiveIntegerField()
+    report = models.OneToOneField(
+        Report, null=True, related_name="shipment_line", on_delete=models.PROTECT
+    )
+
+
 class Correction(models.Model):
     report = models.OneToOneField(
         Report, related_name="correction", on_delete=models.PROTECT
@@ -219,6 +271,83 @@ class Event(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
     action = models.CharField(max_length=100)
     detail = models.JSONField(default=dict)
+
+
+class StockCategory(models.Model):
+    name = models.CharField(max_length=80, unique=True)
+    position = models.PositiveIntegerField(default=0)
+    system = models.BooleanField(default=False)
+
+
+class Supplier(models.Model):
+    name = models.CharField(max_length=180, unique=True)
+    contact = models.CharField(max_length=180, blank=True)
+    email = models.EmailField(blank=True)
+    phone = models.CharField(max_length=50, blank=True)
+    active = models.BooleanField(default=True)
+
+
+class StockItem(models.Model):
+    code = models.CharField(max_length=40, unique=True)
+    name = models.CharField(max_length=180)
+    group = models.CharField(max_length=20)
+    unit = models.CharField(max_length=10)
+    quantity = mass(default=0)
+    reserved = mass(default=0)
+    position = models.PositiveIntegerField(default=0)
+    category = models.ForeignKey(
+        StockCategory, null=True, blank=True, related_name="items", on_delete=models.PROTECT
+    )
+    variant = models.ForeignKey(
+        "Variant", null=True, blank=True, on_delete=models.PROTECT
+    )
+    supplier = models.ForeignKey(
+        Supplier, null=True, blank=True, related_name="materials", on_delete=models.PROTECT
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["variant"],
+                condition=Q(variant__isnull=False),
+                name="one_stock_per_variant",
+            )
+        ]
+
+
+class Recipe(models.Model):
+    variant = models.OneToOneField(
+        Variant, related_name="recipe", on_delete=models.CASCADE
+    )
+
+
+class RecipeLine(models.Model):
+    recipe = models.ForeignKey(Recipe, related_name="lines", on_delete=models.CASCADE)
+    stock = models.ForeignKey(StockItem, related_name="recipe_lines", on_delete=models.PROTECT)
+    quantity = mass()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["recipe", "stock"], name="one_ingredient_per_recipe"
+            ),
+            models.CheckConstraint(
+                condition=Q(quantity__gt=0), name="recipe_line_positive"
+            ),
+        ]
+
+
+class StockMove(models.Model):
+    item = models.ForeignKey(StockItem, related_name="moves", on_delete=models.PROTECT)
+    delta = mass()
+    reserved_delta = mass(default=0)
+    quantity_after = mass()
+    reason = models.TextField()
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    report = models.ForeignKey(
+        "Report", null=True, blank=True, on_delete=models.PROTECT
+    )
+    created_at = models.DateTimeField(default=timezone.now)
 
 
 class RequestReceipt(models.Model):

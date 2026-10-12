@@ -30,10 +30,10 @@ Polecenie nie tworzy dodatkowych kont ani nie nadpisuje istniejących danych. Mo
 ## Pierwsze zamówienie
 
 1. W **Klientach** dodaj odbiorcę (automatycznie aktywny) i jego lokalizacje dostawy.
-2. W **Zamówieniach** kliknij **Nowe zamówienie**, wybierz klienta, zapisany adres dostawy, termin, produkty i sztuki. Przy produkcie „z logo” możesz od razu wgrać grafikę. **Zatwierdź do realizacji** rezerwuje wolny zapas FIFO według smaku; produkcja obejmuje tylko brakującą masę.
+2. W **Zamówieniach** kliknij **Nowe zamówienie**, wybierz klienta, zapisany adres dostawy, termin, produkty i sztuki. Przy produkcie „z logo” możesz od razu wgrać grafikę. **Zatwierdź do realizacji** tworzy zlecenie produkcji na każde opakowanie. Przy kurierze powstaje też zlecenie przesyłki.
 3. W szczegółach pozycji z logo wgraj PDF, PNG lub JPG i zatwierdź etykietę.
-4. W **Produkcji** rozpocznij zadanie. Formularz zgłoszenia podpowie pozostałą masę z planu w kg: możesz ją zmniejszyć dla wykonania częściowego lub wpisać nadwyżkę w osobnym polu. Nadwyżka ponad zapotrzebowanie trafia do wolnego magazynu.
-5. W **Pakowaniu** zgłoś sztuki. System pobiera masę z wybranej partii albo najstarszych dostępnych partii tego zamówienia.
+4. W **Produkcji** rozpocznij zadanie i zgłoś gotowe opakowania, nie kilogramy. Możesz zgłaszać częściami. Grafika z logo musi być zatwierdzona, zanim powstaną opakowania.
+5. W **Pakowaniu** dodaj wyprodukowane opakowania do przesyłki kuriera. Bez gotowych opakowań przesyłki nie da się utworzyć.
 6. Po zakończeniu wszystkich pozycji zamówienie ma status **Zrealizowane**. Sprzedaż oznacza **Wydane**.
 
 Każde zgłoszenie oznacza **nową, dodatkową ilość**. Wprowadzanie 50 szt. dwa razy daje 100 szt.; bezpieczne ponowienie tego samego żądania po błędzie połączenia nie tworzy duplikatu.
@@ -42,7 +42,7 @@ Każde zgłoszenie oznacza **nową, dodatkową ilość**. Wprowadzanie 50 szt. d
 
 - Konta, wiele ról, kontrola uprawnień po stronie serwera, sesje i CSRF.
 - Katalog smaków i wariantów, klienci, archiwizacja, zamówienia wielopozycyjne i szkice.
-- Automatyczne zlecenia, sumowanie tego samego smaku w jednym zamówieniu.
+- Automatyczne zlecenia: produkcja liczona w opakowaniach, pakowanie jako przesyłka do kuriera.
 - Kolejki produkcji i pakowania, pilne terminy, filtry, częściowe wykonanie.
 - Start/pauza czasu pracy, problemy i blokady, wznowienie i anulowanie.
 - Partie, bilans masy, wybór partii lub FIFO, rzeczywiste albo szacowane zużycie, straty.
@@ -134,10 +134,10 @@ Lokalny rozwój bez Dockera: Python 3.12, `pip install -r backend/requirements.t
 - [Architektura i API](docs/architektura.md)
 - [Stan implementacji i dalszy rozwój](docs/stan-implementacji.md)
 
-## Aktualizacja: adresy i wspólny magazyn
+## Aktualizacja: opakowania i przesyłki
 
-Widok **Magazyn popcornu** pokazuje per smak wolną masę, masę zarezerwowaną i łączny stan. To magazyn gotowego popcornu luzem (kg), nie osobny magazyn już zapakowanych SKU. Zapas zarezerwowany dla innego zamówienia nie jest dostępny do ponownego przydzielenia. Sam szkic nie rezerwuje stanu. Anulowanie zwalnia pozostałą masę, a zmniejszenie zamówienia uwalnia nadwyżkę.
+Produkcja kończy się gotowymi opakowaniami. Wolny stan z magazynu schodzi na zamówienie, a produkcja dostaje tylko brakującą liczbę. Karta **Magazyn** pozwala dodawać kategorie, produkty i przyjęcia towaru. Katalog produktów pokazuje te same ilości. Receptura wariantu zużywa surowce przy zgłoszeniu produkcji. Surowiec może mieć dostawcę. Kliknięcie pozycji pokazuje szczegóły oraz edycję nazwy i dostawcy. Zakładka **Wysyłka** pokazuje całe zamówienie z adresem i kontaktem. Przycisk **Wysłano** oznacza całą przesyłkę.
 
-Migracje 0002/0003 dodają adresy klienta i wolny magazyn. Zachowują historię zamówień, przenoszą istniejący adres klienta na listę lokalizacji i rozdzielają dotychczasową nadwyżkę partii na wolny zapas z zapisami w historii ruchów. Przed aktualizacją wykonaj `bash scripts/backup.sh`, potem `docker compose up -d --build`. Migracja danych 0003 jest nieodwracalna; powrót do poprzedniej wersji wymaga odtworzenia kopii.
+Migracja 0004 dopisuje liczbę wyprodukowanych opakowań i tabelę przesyłek. Dla starszych pozycji przyjmuje, że już zapakowane sztuki są wyprodukowanymi opakowaniami. Nie kasuje zamówień ani plików. Przed aktualizacją wykonaj `bash scripts/backup.sh`, potem `docker compose up -d --build`.
 
-Grafika dodana w zamówieniu nadal wymaga zatwierdzenia przed pakowaniem. Adres zapisany w zamówieniu jest kopią wybranej lokalizacji: późniejsza edycja klienta nie zmienia historycznych zamówień.
+Grafika pozycji z logo musi być zatwierdzona przed zgłoszeniem opakowań. Adres zapisany w zamówieniu jest kopią wybranej lokalizacji.

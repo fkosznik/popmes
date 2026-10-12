@@ -103,9 +103,9 @@ Ekrany produkcji i pakowania są dostosowane do tabletów: duże przyciski, kró
 | Uwagi produkcyjne | Opcjonalne, widoczne na produkcji |
 | Uwagi pakowania | Opcjonalne; wspólne i dla danej pozycji |
 | Uwagi wewnętrzne | Widoczne dla sprzedaży i kierownika |
-| Odbiór | Odbiór osobisty / kurier / inny |
+| Odbiór | Kurier (domyślnie) / paczkomat / odbiór osobisty / inny |
 | Etykieta | Plik i status osobno dla pozycji wymagającej personalizacji |
-| Adres dostawy | Wymagany dla kuriera |
+| Adres dostawy | Wymagany dla kuriera i paczkomatu |
 
 Numer, np. ZAM-2026-00001, nadaje system i nie używa go ponownie. Szkic może być niekompletny.
 

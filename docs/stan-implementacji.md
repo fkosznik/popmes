@@ -20,13 +20,13 @@ Logowanie i role, katalog/klienci/zespół, szkice, automatyczne zlecenia, czę�
 - Snapshot obejmuje całą historię zamówień. Dla większej instalacji należy dodać paginację, filtry serwerowe i optymalizację zapytań.
 - Limit logowania DRF jest podstawowy i liczony lokalnie w procesie. Publiczne wdrożenie warto uzupełnić o wspólny limiter reverse proxy lub cache.
 
-Receptury/BOM, partie surowców, magazyn materiałów, zestawy, planowanie wsadów, integracje Shoper/InvenTree/MQTT oraz fizyczna waga/czujnik nie należą do tej implementacji i nie są przedstawiane jako gotowe funkcje.
+Receptury tworzysz przy wariancie w katalogu. Zgłoszenie produkcji zmniejsza stan składników. Surowiec może mieć dostawcę. Kliknięcie surowca albo produktu otwiera szczegóły; nazwę, kategorię i dostawcę zmieniasz w edycji. Gotowy popcorn edytujesz w katalogu. Partie surowców, zestawy, planowanie wsadów, integracje Shoper/InvenTree/MQTT oraz fizyczna waga/czujnik nie należą do tej implementacji.
 
 ## Weryfikacja
 
 Testy backendu pokrywają przepływ częściowy, grupowanie smaku, zamrożenie gramatury, idempotencję, etykiety, deficyt po stratach, korekty, transfery, anulowanie i blokady, role oraz CSRF. Oddzielny test PostgreSQL uruchamia dwóch pracowników próbujących równocześnie zużyć tę samą masę.
 
-Test Playwright przechodzi w interfejsie: logowanie → klient → zamówienie → dwie porcje produkcji i pakowania → zrealizowanie → wydanie. Sprawdza również szerokość widoku mobilnego.
+Test Playwright przechodzi w interfejsie: logowanie → klient → zamówienie → produkcja → wysyłka całego zamówienia → zrealizowanie → wydanie. Sprawdza również szerokość widoku mobilnego.
 
 Workflow GitHub Actions buduje cały zestaw Docker, wykonuje testy PostgreSQL, test przeglądarkowy i porównanie danych po backup/restore. Wynik uruchomienia należy sprawdzić w zakładce Actions; obecność pliku workflow nie jest sama w sobie dowodem przejścia tych testów.
 
@@ -41,3 +41,11 @@ Workflow GitHub Actions buduje cały zestaw Docker, wykonuje testy PostgreSQL, t
 - Nadwyżka produkcji jest dzielona na wolną partię z zachowaniem pochodzenia i bilansu ruchów. Anulowanie i zmniejszenie zamówienia uwalnia niewymaganą masę.
 - Korekta raportu produkcji, którego masa została już podzielona/przydzielona do innych partii, wymaga rozliczenia ruchów. Automatyczne odwrócenie całego łańcucha przydziałów nie jest obsługiwane.
 - Zakładka magazynu pokazuje popcorn luzem w kg według smaku; ewidencja gotowych zapakowanych SKU pozostaje oddzielnym przyszłym modułem.
+
+## Obieg opakowań i przesyłek
+
+Produkcja kończy się gotowymi opakowaniami popcornu. Postęp zlecenia to liczba opakowań, nie kilogramy. Każda pozycja zamówienia ma własne zlecenie produkcji.
+
+Zamówienie pokazuje, czy jest w trakcie produkcji, czy czeka na wysyłkę. Zakładka Wysyłka pokazuje całe zamówienie: ilości każdego popcornu, adres, e-mail i telefon. Przycisk Wysłano oznacza całą przesyłkę naraz, gdy wszystkie pozycje są gotowe. Więcej szczegółów otwiera pełne dane zamówienia. Zamówienie jest zrealizowane po oznaczeniu wysyłki, także przy odbiorze osobistym.
+
+Karta Magazyn ma kategorie i produkty dodawane przez kierownika oraz przycisk Przyjęcie towaru. Produkty z katalogu pojawiają się w magazynie same. Przy zatwierdzeniu zamówienia wolny stan schodzi na to zamówienie, a na produkcję trafia tylko brak.

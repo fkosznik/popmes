@@ -51,12 +51,22 @@ class Command(BaseCommand):
                 name=name,
                 contact="Przykładowy kontakt",
                 email=f"demo{index}@example.com",
+                delivery_addresses=[
+                    {
+                        "id": "demo",
+                        "name": "Sklep",
+                        "address": "ul. Demonstracyjna 1",
+                    }
+                ],
             )
             order = Order.objects.create(
                 created_by=user,
                 customer=customer,
                 due_at=timezone.now() + timedelta(days=days, hours=4),
                 priority=priority,
+                delivery="courier",
+                address="Sklep\nul. Demonstracyjna 1",
+                delivery_address_id="demo",
                 internal_notes="POPMES_DEMO_V1",
                 packing_notes="Dane demonstracyjne — przykład do testowania.",
             )
@@ -67,14 +77,25 @@ class Command(BaseCommand):
                 item.save()
             s.confirm(order, user)
             if index == 1:
-                task = order.tasks.filter(kind="production").first()
-                s.production_report(task, user, {"grams": str(task.target_g)})
+                for task in order.tasks.filter(kind="production"):
+                    left = s.to_produce(task.item)
+                    if left:
+                        s.production_report(task, user, {"units": left})
             if index == 2:
                 for task in order.tasks.filter(kind="production"):
-                    s.production_report(task, user, {"grams": str(task.target_g / 2)})
+                    left = s.to_produce(task.item)
+                    if left:
+                        s.production_report(
+                            task, user, {"units": max(1, left // 2)}
+                        )
             if index == 3:
                 for task in order.tasks.filter(kind="production"):
-                    s.production_report(task, user, {"grams": str(task.target_g)})
-                for task in order.tasks.filter(kind="packing"):
-                    s.packing_report(task, user, {"units": task.item.quantity})
+                    left = s.to_produce(task.item)
+                    if left:
+                        s.production_report(task, user, {"units": left})
+                for task in order.tasks.filter(kind="shipping"):
+                    task.item.refresh_from_db()
+                    ready = s.ready_to_ship(task.item)
+                    if ready:
+                        s.shipping_report(task, user, {"units": ready})
         self.stdout.write("4 synthetic DEMO orders created.")

@@ -495,6 +495,30 @@ th {
   padding: 13px 18px;
   border-bottom: 1px solid var(--line);
 }
+th.sortable {
+  padding: 0;
+}
+th.sortable button {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 13px 18px;
+  color: inherit;
+  font-weight: 500;
+  font-size: 10px;
+  gap: 4px;
+}
+th.sortable button:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  color: #5e3589;
+}
+th.sortable[aria-sort="ascending"] button,
+th.sortable[aria-sort="descending"] button {
+  color: #3c245c;
+}
 td {
   padding: 18px;
   border-bottom: 1px solid #f1eff4;
@@ -519,6 +543,11 @@ td small {
   font-size: 10px;
   margin-top: 5px;
   color: #9b94a3;
+}
+td.order-products {
+  white-space: normal;
+  min-width: 180px;
+  max-width: 280px;
 }
 .product-dots {
   display: flex;
@@ -582,9 +611,14 @@ td small {
   background: #f1edf8;
   color: #9471b4;
 }
-.badge.in_progress {
+.badge.in_progress,
+.badge.producing {
   background: #fff4e1;
   color: #b38839;
+}
+.badge.awaiting_shipment {
+  background: #e7f4ec;
+  color: #2c7a52;
 }
 .badge.completed,
 .badge.done,
@@ -779,6 +813,21 @@ td small {
   color: #a19ba7;
   margin: 5px 0 0;
 }
+.task-title .pack-weight {
+  color: var(--ink);
+  font-weight: 800;
+}
+.task-card.with-logo {
+  border-color: #b7d5e1;
+  background: #f4fbfc;
+  box-shadow: inset 3px 0 0 #14627a;
+}
+.task-card.with-logo .task-title h2 {
+  color: #14627a;
+}
+.task-title .badge {
+  margin-top: 8px;
+}
 .flavor-icon {
   display: grid;
   place-items: center;
@@ -854,6 +903,49 @@ td small {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+.ship-lines {
+  list-style: none;
+  margin: 18px 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ship-lines li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.ship-lines strong {
+  min-width: 64px;
+  font-size: 15px;
+}
+.ship-lines span {
+  font-size: 14px;
+}
+.ship-lines small {
+  color: #a19ba7;
+  font-size: 12px;
+}
+.ship-contact {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+.ship-contact p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ship-contact small {
+  display: block;
+  color: #91879c;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
 }
 .task-actions {
   display: flex;
@@ -1290,21 +1382,47 @@ pre {
 .form-section-head h3 {
   margin: 0;
 }
-.order-line {
+.weight-picker {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 14px;
+}
+.weight-picker span {
+  font-size: 11px;
+  color: #91849d;
+  margin-right: 4px;
+}
+.weight-picker button {
+  min-width: 64px;
+  padding: 8px 12px;
+}
+.weight-picker button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.order-line {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.6fr) 108px 88px auto auto;
   align-items: center;
   gap: 9px;
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
-.order-line input {
-  width: 85px;
-}
-.order-line select {
-  flex: 1;
+.order-line select,
+.order-line input[type="number"] {
+  width: 100%;
+  min-width: 0;
 }
 .order-line > span {
   font-size: 10px;
   color: #a496af;
+}
+.order-line .check-field,
+.order-line .field {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 .order-total {
   display: flex;
@@ -1692,13 +1810,10 @@ footer span:last-child {
     flex: 1;
   }
   .order-line {
-    flex-wrap: wrap;
+    grid-template-columns: 1fr 88px auto auto;
   }
-  .order-line select {
-    min-width: 100%;
-  }
-  .order-line input {
-    flex: 1;
+  .order-line select:first-of-type {
+    grid-column: 1 / -1;
   }
   .drawer {
     max-width: 100vw;

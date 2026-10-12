@@ -33,11 +33,24 @@ from .models import (
     Report,
     Label,
     RequestReceipt,
+    StockItem,
+    Supplier,
 )
 from django.db.models import Max
 from .serializers import ProductSerializer, VariantSerializer, CustomerSerializer
 from . import services as s
-from .presentation import user_data, task_data, order_data, report_data, batch_data
+from .presentation import (
+    user_data,
+    task_data,
+    order_data,
+    report_data,
+    batch_data,
+    shipment_data,
+    stock_data,
+    stock_profile,
+    category_data,
+    supplier_data,
+)
 
 
 class LoginThrottle(AnonRateThrottle):
@@ -157,21 +170,24 @@ def state(request):
                 "variants": [],
                 "customers": [],
                 "batches": [],
+                "stock": [],
+                "categories": [],
+                "suppliers": [],
             }
         )
     commercial = bool(set(r) & {"sales", "manager"})
     kinds = (
-        ["production", "packing"]
+        ["production", "shipping"]
         if "manager" in r
         else [
             k
-            for role, k in [("production", "production"), ("packing", "packing")]
+            for role, k in [("production", "production"), ("packing", "shipping")]
             if role in r
         ]
     )
     orders = Order.objects.select_related("customer").order_by("-id")
     tasks = (
-        Task.objects.select_related("order", "product", "item")
+        Task.objects.select_related("order", "order__customer", "product", "item")
         .filter(
             kind__in=kinds,
             order__cancelled_at__isnull=True,
@@ -179,6 +195,25 @@ def state(request):
         )
         .order_by("-order__priority", "order__due_at", "id")
     )
+    see_stock = bool(set(r) & {"sales", "manager", "production", "packing", "admin"})
+    stock_by_variant = {}
+    categories = []
+    stock = []
+    if see_stock:
+        stock = [stock_data(item) for item in s.stock_rows()]
+        categories = [category_data(item) for item in s.category_rows()]
+        stock_by_variant = {
+            item["variant_id"]: item for item in stock if item["variant_id"]
+        }
+    variants = VariantSerializer(
+        Variant.objects.all().order_by("name"), many=True
+    ).data
+    recipes = s.recipe_rows()
+    for row in variants:
+        level = stock_by_variant.get(row["id"])
+        row["stock_quantity"] = level["quantity"] if level else "0"
+        row["stock_available"] = level["available"] if level else "0"
+        row["recipe"] = recipes.get(row["id"], [])
     return Response(
         {
             "user": user_data(request.user),
@@ -187,9 +222,7 @@ def state(request):
             "products": ProductSerializer(
                 Product.objects.all().order_by("name"), many=True
             ).data,
-            "variants": VariantSerializer(
-                Variant.objects.all().order_by("name"), many=True
-            ).data,
+            "variants": variants,
             "customers": CustomerSerializer(
                 Customer.objects.all().order_by("name"), many=True
             ).data
@@ -203,6 +236,9 @@ def state(request):
             ]
             if commercial or "production" in r or "packing" in r
             else [],
+            "stock": stock,
+            "categories": categories,
+            "suppliers": [supplier_data(item) for item in s.supplier_rows()],
         }
     )
 
@@ -230,6 +266,8 @@ def catalog(request, kind):
     form = serializer(instance, data=payload, partial=bool(instance))
     form.is_valid(raise_exception=True)
     value = form.save()
+    if kind == "variants":
+        s.sync_catalog_stock()
     s.event(None, request.user, "Zapisano katalog", kind=kind, id=value.pk)
     return {"id": value.pk}
 
@@ -276,8 +314,8 @@ def save_order(request):
         DateTimeField().run_validation(data["due_at"]) if data.get("due_at") else None
     )
     if data.get("priority", "normal") not in ["normal", "urgent"] or data.get(
-        "delivery", "pickup"
-    ) not in ["pickup", "courier", "other"]:
+        "delivery", "courier"
+    ) not in ["pickup", "courier", "locker", "other"]:
         raise ValidationError("Niepoprawny priorytet lub sposób odbioru.")
     for field in [
         "priority",
@@ -296,8 +334,12 @@ def save_order(request):
         if not address:
             raise ValidationError("Wybierz adres należący do wybranego klienta.")
         order.address = address["name"] + "\n" + address["address"]
-    elif order.delivery == "courier":
-        raise ValidationError("Wybierz zapisany adres dostawy klienta.")
+    elif order.delivery in ("courier", "locker"):
+        raise ValidationError(
+            "Dla paczkomatu wybierz zapisany punkt odbioru."
+            if order.delivery == "locker"
+            else "Wybierz zapisany adres dostawy klienta."
+        )
     else:
         order.address = ""
     order.delivery_address_id = address_id
@@ -330,7 +372,7 @@ def save_order(request):
 
 @api_view(["GET"])
 def detail(request, pk):
-    s.permit(request.user, "sales", "manager")
+    s.permit(request.user, "sales", "manager", "packing")
     order = get_object_or_404(Order, pk=pk)
     result = order_data(order)
     result["events"] = [
@@ -346,8 +388,12 @@ def detail(request, pk):
     result["reports"] = [
         report_data(r)
         for r in Report.objects.filter(task__order=order)
-        .select_related("task", "user", "label", "batch")
+        .select_related("task", "user", "label", "batch", "shipment_line__shipment")
         .order_by("-id")
+    ]
+    result["shipments"] = [
+        shipment_data(shipment)
+        for shipment in order.shipments.prefetch_related("lines__item").order_by("-id")
     ]
     return Response(result)
 
@@ -355,11 +401,12 @@ def detail(request, pk):
 @api_view(["POST"])
 @mutation
 def order_action(request, pk, action):
-    allowed = (
-        ["sales", "manager"]
-        if action in ["confirm", "issue", "amend", "delete"]
-        else ["manager"]
-    )
+    if action == "ship":
+        allowed = ["packing", "manager"]
+    elif action in ["confirm", "issue", "amend", "delete"]:
+        allowed = ["sales", "manager"]
+    else:
+        allowed = ["manager"]
     s.permit(request.user, *allowed)
     order = locked_order(pk)
     if action == "confirm":
@@ -387,6 +434,7 @@ def order_action(request, pk, action):
         order.save(update_fields=["cancelled_at"])
         s.stop_sessions(order=order)
         s.event(order, request.user, "Anulowano zamówienie", reason=why)
+        s.release_unshipped(order, request.user, "Anulowanie: " + why)
         s.release_surplus(order, request.user)
     elif action == "issue":
         if s.status(order) != "completed" or order.hold_reason:
@@ -406,6 +454,8 @@ def order_action(request, pk, action):
         if order.confirmed_at or order.items.filter(labels__isnull=False).exists():
             raise ValidationError("Można usunąć tylko szkic bez etykiet.")
         order.delete()
+    elif action == "ship":
+        s.ship_order(order, request.user)
     else:
         raise ValidationError("Nieznana czynność.")
     return {"ok": True, "id": pk}
@@ -451,25 +501,8 @@ def task_action(request, pk, action):
         )
         return {"id": report.pk}
     elif action == "target":
-        s.permit(request.user, "manager")
-        s.ensure_open(order)
-        if task.kind != "production":
-            raise ValidationError("Cel masowy dotyczy produkcji.")
-        why = s.reason(request.data)
-        target = s.decimal(request.data.get("target_g"))
-        if target < task.produced_g:
-            raise ValidationError("Cel nie może być mniejszy od już wykonanej masy.")
-        before = str(task.target_g)
-        task.target_g = target
-        task.save(update_fields=["target_g"])
-        s.event(
-            order,
-            request.user,
-            "Zmieniono cel produkcji",
-            task_id=pk,
-            before=before,
-            after=str(target),
-            reason=why,
+        raise ValidationError(
+            "Cel produkcji to liczba opakowań w zamówieniu. Zmień ilość zamówienia."
         )
     else:
         raise ValidationError("Nieznana czynność.")
@@ -526,7 +559,8 @@ def upload_label(request, pk):
         mime=mime,
         uploaded_by=request.user,
     )
-    s.stop_sessions(task=item.task) if hasattr(item, "task") else None
+    for task in item.tasks.filter(kind="production"):
+        s.stop_sessions(task=task)
     s.event(
         order,
         request.user,
@@ -562,7 +596,7 @@ def approve_label(request, pk):
 
 @api_view(["GET"])
 def download_label(request, pk):
-    s.permit(request.user, "sales", "packing", "manager")
+    s.permit(request.user, "sales", "production", "packing", "manager")
     label = get_object_or_404(Label, pk=pk)
     response = FileResponse(
         label.file.open("rb"),
@@ -702,3 +736,104 @@ def save_user(request):
         active=user.is_active,
     )
     return {"id": user.pk}
+
+
+@api_view(["POST"])
+@mutation
+def set_stock(request, pk):
+    s.permit(request.user, "manager")
+    get_object_or_404(StockItem, pk=pk)
+    s.set_stock_quantity(
+        pk, request.data.get("quantity"), request.user, s.reason(request.data)
+    )
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def stock_category(request):
+    s.permit(request.user, "manager")
+    category = s.add_category(request.data.get("name"))
+    return {"id": category.pk}
+
+
+@api_view(["POST"])
+@mutation
+def stock_product(request):
+    s.permit(request.user, "manager")
+    item = s.add_stock_product(
+        request.data.get("category_id"),
+        request.data.get("name"),
+        request.data.get("unit"),
+        request.data.get("supplier_id"),
+    )
+    return {"id": item.pk}
+
+
+@api_view(["POST"])
+@mutation
+def supplier_create(request):
+    s.permit(request.user, "manager")
+    supplier = s.add_supplier(request.data)
+    return {"id": supplier.pk}
+
+
+@api_view(["POST"])
+@mutation
+def stock_supplier(request, pk):
+    s.permit(request.user, "manager")
+    get_object_or_404(StockItem, pk=pk)
+    s.assign_supplier(pk, request.data.get("supplier_id"))
+    return {"ok": True}
+
+
+@api_view(["GET"])
+def stock_detail(request, pk):
+    s.permit(request.user, "sales", "manager", "production", "packing", "admin")
+    item = get_object_or_404(
+        StockItem.objects.select_related(
+            "category", "supplier", "variant", "variant__product"
+        ),
+        pk=pk,
+    )
+    return Response(stock_profile(item))
+
+
+@api_view(["POST"])
+@mutation
+def stock_edit(request, pk):
+    s.permit(request.user, "manager")
+    get_object_or_404(StockItem, pk=pk)
+    s.update_stock_item(pk, request.data)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def supplier_update(request, pk):
+    s.permit(request.user, "manager")
+    get_object_or_404(Supplier, pk=pk)
+    s.update_supplier(pk, request.data)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def recipe_save(request):
+    s.permit(request.user, "manager")
+    s.save_recipe(request.data.get("variant_id"), request.data.get("lines") or [])
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def stock_receipt(request):
+    s.permit(request.user, "manager")
+    get_object_or_404(StockItem, pk=request.data.get("stock_id"))
+    s.receive_stock(
+        request.data.get("stock_id"),
+        request.data.get("quantity"),
+        request.user,
+        s.reason(request.data),
+    )
+    return {"ok": True}

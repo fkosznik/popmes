@@ -63,15 +63,10 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
     .getAttribute("value");
   await address.selectOption(addressId!);
   await page.getByLabel("Termin gotowości").fill("2026-12-01T15:00");
-  const option = await page
-    .getByRole("combobox", { name: "Produkt 1", exact: true })
-    .locator("option")
-    .filter({ hasText: /Słony karmel\s+·\s+30 g/ })
-    .first()
-    .getAttribute("value");
+  await page.getByRole("button", { name: "30 g", exact: true }).click();
   await page
-    .getByRole("combobox", { name: "Produkt 1", exact: true })
-    .selectOption(option!);
+    .getByRole("combobox", { name: "Smak 1", exact: true })
+    .selectOption({ label: "Słony karmel" });
   await page.getByLabel("Ilość 1").clear();
   await page.getByLabel("Ilość 1").pressSequentially("30");
   await expect(page.getByLabel("Ilość 1")).toHaveValue("30");
@@ -88,35 +83,31 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   const prod = page.locator(".task-card").filter({ hasText: number! });
   await prod.getByRole("button", { name: "Rozpocznij", exact: true }).click();
   await expect(prod.getByRole("button", { name: "Pauza" })).toBeVisible();
-  await prod.getByRole("button", { name: "Zgłoś produkcję" }).click();
+  await prod.getByRole("button", { name: "Zgłoś opakowania" }).click();
   await expect(
-    page.getByLabel("Gotowy popcorn (kg)", { exact: true }),
-  ).toHaveValue("0.3");
-  await expect(
-    page.getByLabel("Odpad produkcyjny (kg)", { exact: true }),
-  ).toHaveCount(0);
-  await page.getByLabel("Gotowy popcorn (kg)", { exact: true }).fill("0.150");
+    page.getByLabel("Wyprodukowane opakowania", { exact: true }),
+  ).toHaveValue("10");
+  await page.getByLabel("Wyprodukowane opakowania", { exact: true }).fill("5");
   await page.getByRole("button", { name: "Zapisz wykonanie" }).click();
   await expect(page.getByRole("dialog")).toBeHidden();
-  await page.getByRole("button", { name: "Pakowanie", exact: true }).click();
+  await page.getByRole("button", { name: "Wysyłka", exact: true }).click();
   const pack = page.locator(".task-card").filter({ hasText: number! });
-  await pack.getByRole("button", { name: "Zgłoś pakowanie" }).click();
-  await page.getByLabel("Dodatkowe zapakowane sztuki").fill("5");
-  await page.getByRole("button", { name: "Zapisz wykonanie" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
-  await expect(
-    pack.getByText("Oczekiwanie na popcorn", { exact: true }),
-  ).toBeVisible();
+  await expect(pack.getByText("10 szt.")).toBeVisible();
+  await expect(pack.getByText("Testowa 2, Gorzów")).toBeVisible();
+  await expect(pack.getByRole("button", { name: "Rozpocznij" })).toHaveCount(0);
+  await expect(pack.getByRole("button", { name: "Wysłano" })).toBeDisabled();
+  await expect(pack.getByText("Czeka na produkcję")).toBeVisible();
+  await pack.getByRole("button", { name: "Więcej szczegółów" }).click();
+  await expect(drawer.getByText(number!)).toBeVisible();
+  await page.getByRole("button", { name: "Zamknij szczegóły" }).click();
   await page.getByRole("button", { name: "Produkcja", exact: true }).click();
-  await prod.getByRole("button", { name: "Zgłoś produkcję" }).click();
-  await page.getByLabel("Gotowy popcorn (kg)", { exact: true }).fill("0.150");
+  await prod.getByRole("button", { name: "Zgłoś opakowania" }).click();
+  await page.getByLabel("Wyprodukowane opakowania", { exact: true }).fill("5");
   await page.getByRole("button", { name: "Zapisz wykonanie" }).click();
   await expect(page.getByRole("dialog")).toBeHidden();
-  await page.getByRole("button", { name: "Pakowanie", exact: true }).click();
-  await pack.getByRole("button", { name: "Zgłoś pakowanie" }).click();
-  await page.getByLabel("Dodatkowe zapakowane sztuki").fill("5");
-  await page.getByRole("button", { name: "Zapisz wykonanie" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  await page.getByRole("button", { name: "Wysyłka", exact: true }).click();
+  await pack.getByRole("button", { name: "Wysłano" }).click();
+  await expect(pack).toHaveCount(0);
   await page
     .getByRole("button", { name: "Zamówienia", exact: false })
     .first()
@@ -162,16 +153,11 @@ test("grafika przy pozycji z logo", async ({ page }) => {
     .getAttribute("value");
   await customer.selectOption(cid!);
   await page.getByLabel("Termin gotowości").fill("2026-12-01T15:00");
-  const product = page.getByRole("combobox", {
-    name: "Produkt 1",
-    exact: true,
-  });
-  const vid = await product
-    .locator("option")
-    .filter({ hasText: /z logo/ })
-    .first()
-    .getAttribute("value");
-  await product.selectOption(vid!);
+  await page.getByRole("button", { name: "30 g", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "Smak 1", exact: true })
+    .selectOption({ label: "Słony karmel" });
+  await page.getByRole("checkbox", { name: "Popcorn z logo" }).check();
   await page.getByLabel("Ilość 1").fill("10");
   const file = page.locator('input[type="file"][name="label_0"]');
   await expect(file).toBeVisible();

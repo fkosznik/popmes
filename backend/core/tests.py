@@ -40,7 +40,11 @@ class FlowTests(TestCase):
             product=self.product, sku="KAR30", name="Karmel 30", weight_g=30
         )
         self.customer = Customer.objects.create(
-            name="Firma testowa", email="private@example.com"
+            name="Firma testowa",
+            email="private@example.com",
+            delivery_addresses=[
+                {"id": "a1", "name": "Sklep", "address": "Testowa 1"}
+            ],
         )
         self.media = tempfile.TemporaryDirectory()
         self.override = override_settings(MEDIA_ROOT=self.media.name)
@@ -58,22 +62,25 @@ class FlowTests(TestCase):
         self.assertEqual(response.status_code, expected, response.content)
         return response
 
-    def order(self, quantity=200, custom=False, confirm=True):
+    def order(self, quantity=200, custom=False, confirm=True, pickup=False):
         self.variant.custom_label = custom
         self.variant.save()
-        r = self.post(
-            "orders/save/",
-            {
-                "customer_id": self.customer.pk,
-                "due_at": (timezone.now() + timedelta(days=1)).isoformat(),
-                "items": [{"variant_id": self.variant.pk, "quantity": quantity}],
-                "confirm": confirm,
-            },
-        )
+        payload = {
+            "customer_id": self.customer.pk,
+            "due_at": (timezone.now() + timedelta(days=1)).isoformat(),
+            "items": [{"variant_id": self.variant.pk, "quantity": quantity}],
+            "confirm": confirm,
+        }
+        if pickup:
+            payload["delivery"] = "pickup"
+        else:
+            payload["delivery"] = "courier"
+            payload["delivery_address_id"] = "a1"
+        r = self.post("orders/save/", payload)
         return Order.objects.get(pk=r.data["id"])
 
     def tasks(self, order):
-        return order.tasks.get(kind="production"), order.tasks.get(kind="packing")
+        return order.tasks.get(kind="production"), order.tasks.get(kind="shipping")
 
     def png(self):
         out = io.BytesIO()
@@ -96,22 +103,24 @@ class FlowTests(TestCase):
         order = self.order()
         p, k = self.tasks(order)
         key = uuid.uuid4()
-        self.post(f"tasks/{p.pk}/report/", {"grams": "4000"}, key)
-        self.post(f"tasks/{p.pk}/report/", {"grams": "4000"}, key)
+        self.post(f"tasks/{p.pk}/report/", {"units": 100}, key)
+        self.post(f"tasks/{p.pk}/report/", {"units": 100}, key)
         self.assertEqual(Report.objects.count(), 1)
-        self.post(f"tasks/{p.pk}/report/", {"grams": "3000"}, key, 400)
+        self.post(f"tasks/{p.pk}/report/", {"units": 50}, key, 400)
         self.post(f"tasks/{k.pk}/report/", {"units": 100})
-        self.assertEqual(s.available(order, self.product.pk), 1000)
-        self.assertEqual(s.status(order), "in_progress")
+        order.items.first().refresh_from_db()
+        self.assertEqual(order.items.first().produced, 100)
+        self.assertEqual(order.items.first().packed, 100)
+        self.assertEqual(s.status(order), "producing")
         self.post(f"tasks/{k.pk}/report/", {"units": 100}, expected=400)
-        self.post(f"tasks/{p.pk}/report/", {"grams": "2000"})
+        self.post(f"tasks/{p.pk}/report/", {"units": 100})
         self.post(f"tasks/{k.pk}/report/", {"units": 100})
         self.assertEqual(s.status(order), "completed")
-        self.assertEqual(s.available(order, self.product.pk), 0)
+        self.assertEqual(order.shipments.count(), 2)
         self.post(f"orders/{order.pk}/issue/")
         order.refresh_from_db()
         self.assertEqual(s.status(order), "issued")
-        self.post(f"tasks/{p.pk}/report/", {"grams": 100}, expected=400)
+        self.post(f"tasks/{p.pk}/report/", {"units": 1}, expected=400)
 
     def test_flavor_grouping_and_frozen_snapshot(self):
         variant2 = Variant.objects.create(
@@ -121,6 +130,8 @@ class FlowTests(TestCase):
             "orders/save/",
             {
                 "customer_id": self.customer.pk,
+                "delivery": "courier",
+                "delivery_address_id": "a1",
                 "due_at": timezone.now().isoformat(),
                 "items": [
                     {"variant_id": self.variant.pk, "quantity": 100},
@@ -130,30 +141,32 @@ class FlowTests(TestCase):
             },
         )
         order = Order.objects.get(pk=r.data["id"])
-        self.assertEqual(order.tasks.filter(kind="production").count(), 1)
-        self.assertEqual(order.tasks.get(kind="production").target_g, 5000)
-        self.assertEqual(order.tasks.filter(kind="packing").count(), 2)
+        self.assertEqual(order.tasks.filter(kind="production").count(), 2)
+        self.assertEqual(order.tasks.filter(kind="shipping").count(), 2)
+        first = order.tasks.filter(kind="production").order_by("id").first()
+        self.post(f"tasks/{first.pk}/report/", {"units": 100})
+        self.assertEqual(s.status(order), "producing")
         self.variant.weight_g = 40
         self.variant.save()
         self.post(f"orders/{order.pk}/confirm/")
         self.assertEqual(order.items.first().weight_g, 30)
-        self.assertEqual(order.tasks.count(), 3)
+        self.assertEqual(order.tasks.count(), 4)
 
     def test_label_gate_version_and_download(self):
         order = self.order(custom=True)
         p, k = self.tasks(order)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 6000})
-        self.post(f"tasks/{k.pk}/report/", {"units": 100}, expected=400)
-        lid = self.upload(k.item)
+        self.post(f"tasks/{p.pk}/report/", {"units": 100}, expected=400)
+        lid = self.upload(p.item)
         self.post(f"labels/{lid}/approve/")
+        self.post(f"tasks/{p.pk}/report/", {"units": 100})
         self.post(f"tasks/{k.pk}/report/", {"units": 100})
-        report = Report.objects.get(task=k)
+        report = Report.objects.get(task=p)
         self.assertEqual(report.label_id, lid)
-        second = self.upload(k.item)
-        self.post(f"tasks/{k.pk}/report/", {"units": 100}, expected=400)
+        second = self.upload(p.item)
+        self.post(f"tasks/{p.pk}/report/", {"units": 100}, expected=400)
         self.post(f"labels/{lid}/approve/", expected=400)
         self.post(f"labels/{second}/approve/")
-        self.post(f"tasks/{k.pk}/report/", {"units": 100})
+        self.post(f"tasks/{p.pk}/report/", {"units": 100})
         response = self.client.get(f"/api/labels/{lid}/download/")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(b"".join(response.streaming_content).startswith(b"\x89PNG"))
@@ -162,90 +175,78 @@ class FlowTests(TestCase):
             self.client.get(f"/api/labels/{lid}/download/").status_code, 403
         )
 
-    def test_waste_deficit_and_replenish_no_duplicate(self):
+    def test_cannot_ship_more_packages_than_produced(self):
         order = self.order()
         p, k = self.tasks(order)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 6000})
-        self.post(
-            f"tasks/{k.pk}/report/", {"units": 100, "grams": 3100, "waste_g": 100}
-        )
-        self.assertEqual(s.available(order, self.product.pk), 2900)
-        self.assertEqual(s.deficits(order)[0]["shortage_g"], "100.000")
-        self.post(f"orders/{order.pk}/replenish/")
-        self.post(f"orders/{order.pk}/replenish/")
-        self.assertEqual(order.tasks.filter(supplemental=True).count(), 1)
-        self.assertEqual(order.tasks.get(supplemental=True).target_g, 100)
+        self.post(f"tasks/{p.pk}/report/", {"units": 100})
+        self.post(f"tasks/{k.pk}/report/", {"units": 100})
+        self.post(f"tasks/{k.pk}/report/", {"units": 1}, expected=400)
+        self.post(f"orders/{order.pk}/replenish/", expected=400)
+        self.assertEqual(order.tasks.filter(supplemental=True).count(), 0)
+        self.assertEqual(order.items.first().produced, 100)
+        self.assertEqual(order.items.first().packed, 100)
 
-    def test_overpacking_invalid_mass_and_cross_order_batch(self):
+    def test_overpacking_and_invalid_units(self):
         order = self.order(10)
         p, k = self.tasks(order)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 300})
+        self.post(f"tasks/{k.pk}/report/", {"units": 1}, expected=400)
+        self.post(f"tasks/{p.pk}/report/", {"units": 10})
         self.post(f"tasks/{k.pk}/report/", {"units": 11}, expected=400)
         self.post(f"tasks/{k.pk}/report/", {"units": 1.5}, expected=400)
-        self.post(f"tasks/{k.pk}/report/", {"units": 1, "grams": 20}, expected=400)
-        self.post(f"tasks/{p.pk}/report/", {"grams": "NaN"}, expected=400)
-        other = self.order(1)
-        p2, _ = self.tasks(other)
-        self.post(f"tasks/{p2.pk}/report/", {"grams": 30})
-        self.post(
-            f"tasks/{k.pk}/report/",
-            {
-                "units": 1,
-                "allocations": [{"batch_id": p2.batches.first().pk, "grams": 30}],
-            },
-            expected=400,
-        )
-        self.assertEqual(s.available(order, self.product.pk), 300)
+        self.post(f"tasks/{p.pk}/report/", {"units": "NaN"}, expected=400)
+        self.post(f"tasks/{k.pk}/report/", {"units": 4})
+        item = order.items.first()
+        item.refresh_from_db()
+        self.assertEqual(item.produced, 10)
+        self.assertEqual(item.packed, 4)
 
     def test_hold_cancel_and_audit(self):
         order = self.order(10)
         p, k = self.tasks(order)
         self.post(f"tasks/{p.pk}/start/")
-        self.post(f"tasks/{p.pk}/report/", {"grams": 150})
+        self.post(f"tasks/{p.pk}/report/", {"units": 5})
         self.post(f"orders/{order.pk}/hold/", {"reason": "Brak surowca"})
         self.assertFalse(WorkSession.objects.filter(ended_at=None).exists())
-        self.post(f"tasks/{p.pk}/report/", {"grams": 150}, expected=400)
+        self.post(f"tasks/{p.pk}/report/", {"units": 5}, expected=400)
         self.post(f"orders/{order.pk}/resume/")
         self.post(f"orders/{order.pk}/cancel/", {"reason": "Rezygnacja klienta"})
-        self.assertEqual(s.available(order, self.product.pk), 0)
-        self.assertEqual(Batch.objects.get(order=None).available_g, 150)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 150}, expected=400)
+        self.assertEqual(order.items.first().produced, 5)
+        self.post(f"tasks/{p.pk}/report/", {"units": 5}, expected=400)
         self.assertTrue(order.events.filter(action="Anulowano zamówienie").exists())
 
-    def test_corrections_preserve_reports_and_mass(self):
+    def test_corrections_preserve_reports_and_packages(self):
         order = self.order(10)
         p, k = self.tasks(order)
-        r = self.post(f"tasks/{p.pk}/report/", {"grams": 300}).data["id"]
+        r = self.post(f"tasks/{p.pk}/report/", {"units": 10}).data["id"]
         packed = self.post(f"tasks/{k.pk}/report/", {"units": 10}).data["id"]
         self.post(f"reports/{r}/correct/", {"reason": "Błąd"}, expected=400)
-        self.post(
-            f"reports/{packed}/correct/",
-            {"reason": "Błędne kliknięcie", "restore_mass": True},
-        )
-        self.assertEqual(s.available(order, self.product.pk), 300)
-        self.assertEqual(order.items.first().packed, 0)
+        self.post(f"reports/{packed}/correct/", {"reason": "Błędne kliknięcie"})
+        item = order.items.first()
+        item.refresh_from_db()
+        self.assertEqual(item.produced, 10)
+        self.assertEqual(item.packed, 0)
         self.post(f"reports/{r}/correct/", {"reason": "Błędny zapis"})
-        self.assertEqual(s.available(order, self.product.pk), 0)
+        item.refresh_from_db()
+        self.assertEqual(item.produced, 0)
         self.assertEqual(Report.objects.count(), 2)
         self.assertEqual(Correction.objects.count(), 2)
         self.post(f"reports/{r}/correct/", {"reason": "Jeszcze raz"}, expected=400)
 
-    def test_real_repacking_does_not_restore_mass(self):
+    def test_shipment_correction_keeps_produced_packages(self):
         order = self.order(10)
         p, k = self.tasks(order)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 300})
+        self.post(f"tasks/{p.pk}/report/", {"units": 10})
         r = self.post(f"tasks/{k.pk}/report/", {"units": 10}).data["id"]
-        self.post(
-            f"reports/{r}/correct/",
-            {"reason": "Produkt uszkodzony", "restore_mass": False},
-        )
-        self.assertEqual(s.available(order, self.product.pk), 0)
-        self.assertEqual(s.deficits(order)[0]["shortage_g"], "300.000")
+        self.post(f"reports/{r}/correct/", {"reason": "Zła przesyłka"})
+        item = order.items.first()
+        item.refresh_from_db()
+        self.assertEqual(item.produced, 10)
+        self.assertEqual(item.packed, 0)
 
     def test_amend_conflict_and_completed_reopen(self):
         order = self.order(10)
         p, k = self.tasks(order)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 300})
+        self.post(f"tasks/{p.pk}/report/", {"units": 10})
         self.post(f"tasks/{k.pk}/report/", {"units": 10})
         order.refresh_from_db()
         item = order.items.first()
@@ -256,18 +257,23 @@ class FlowTests(TestCase):
         }
         self.post(f"orders/{order.pk}/amend/", data)
         self.post(f"orders/{order.pk}/amend/", data, expected=400)
-        p.refresh_from_db()
+        item.refresh_from_db()
         order.refresh_from_db()
-        self.assertEqual(p.target_g, 600)
-        self.assertEqual(s.status(order), "in_progress")
+        self.assertEqual(item.quantity, 20)
+        self.assertEqual(item.produced, 10)
+        self.assertEqual(s.status(order), "producing")
         self.assertIsNone(order.completed_at)
 
     def test_transfer_preserves_origin_and_ledger(self):
+        from decimal import Decimal
+
         source = self.order(10)
         p, _ = self.tasks(source)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 400})
         target = self.order(10)
-        batch = p.batches.first()
+        batch = Batch.objects.create(
+            origin=p, order=source, product=self.product, available_g=0
+        )
+        s.movement(batch, source, self.admin, Decimal("400"), "Stan historyczny")
         self.post(
             f"batches/{batch.pk}/move/",
             {"order_id": target.pk, "reason": "Zmiana przydziału"},
@@ -401,38 +407,106 @@ class FlowTests(TestCase):
         self.assertIsNone(label.approved_at)
         self.assertTrue(label.item.custom_label)
 
-    def test_surplus_reserved_before_new_production(self):
-        source = self.order(10)
-        p, _ = self.tasks(source)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 500})
-        self.assertEqual(s.available(source, self.product.pk), 300)
-        self.assertEqual(Batch.objects.get(order=None).available_g, 200)
-        target = self.order(15)
-        production, packing = self.tasks(target)
-        self.assertEqual(production.target_g, 250)
-        self.assertEqual(s.available(target, self.product.pk), 200)
-        self.post(f"tasks/{packing.pk}/report/", {"units": 5})
-        self.assertEqual(s.available(target, self.product.pk), 50)
-        following = self.order(10)
-        self.assertEqual(self.tasks(following)[0].target_g, 300)
-        for batch in Batch.objects.all():
-            self.assertEqual(
-                sum(m.delta_g for m in batch.movements.all()), batch.available_g
-            )
+    def test_ship_sends_the_whole_order(self):
+        from .models import ShipmentLine
 
-    def test_full_stock_cover_skips_production_and_cancel_releases(self):
-        source = self.order(10)
-        p, _ = self.tasks(source)
-        self.post(f"tasks/{p.pk}/report/", {"grams": 600})
-        target = self.order(10)
-        production, _ = self.tasks(target)
-        self.assertEqual(production.target_g, 0)
-        self.assertTrue(s.complete(production))
-        self.post(f"orders/{target.pk}/cancel/", {"reason": "Rezygnacja"})
-        self.assertEqual(s.available(target, self.product.pk), 0)
-        self.assertEqual(
-            sum(b.available_g for b in Batch.objects.filter(order=None)), 300
+        self.customer.phone = "500600700"
+        self.customer.save()
+        other = Variant.objects.create(
+            product=self.product, sku="KAR100B", name="Słony karmel", weight_g=30
         )
+        response = self.post(
+            "orders/save/",
+            {
+                "customer_id": self.customer.pk,
+                "delivery": "courier",
+                "delivery_address_id": "a1",
+                "due_at": (timezone.now() + timedelta(days=1)).isoformat(),
+                "items": [
+                    {"variant_id": self.variant.pk, "quantity": 10},
+                    {"variant_id": other.pk, "quantity": 4},
+                ],
+                "confirm": True,
+            },
+        )
+        order = Order.objects.get(pk=response.data["id"])
+        state = self.client.get("/api/state/").json()
+        card = next(
+            task
+            for task in state["tasks"]
+            if task["kind"] == "shipping" and task["order_id"] == order.pk
+        )
+        self.assertEqual(len(card["items"]), 2)
+        self.assertEqual(card["customer_email"], "private@example.com")
+        self.assertEqual(card["customer_phone"], "500600700")
+        self.assertIn("Testowa 1", card["address"])
+        self.post(f"orders/{order.pk}/ship/", expected=400)
+        for task in order.tasks.filter(kind="production"):
+            self.post(f"tasks/{task.pk}/report/", {"units": task.item.quantity})
+        self.post(f"orders/{order.pk}/ship/")
+        order.refresh_from_db()
+        self.assertEqual(s.status(order), "completed")
+        self.assertEqual(order.shipments.count(), 1)
+        self.assertEqual(ShipmentLine.objects.filter(shipment__order=order).count(), 2)
+        self.post(f"orders/{order.pk}/ship/", expected=400)
+        fresh = self.order(2)
+        for task in fresh.tasks.filter(kind="production"):
+            self.post(f"tasks/{task.pk}/report/", {"units": 2})
+        worker = get_user_model().objects.create_user(
+            "ship-worker", password="Test-password-123!"
+        )
+        worker.groups.add(Group.objects.get_or_create(name="production")[0])
+        self.client.force_login(worker)
+        self.post(f"orders/{fresh.pk}/ship/", expected=403)
+        worker.groups.add(Group.objects.get_or_create(name="packing")[0])
+        self.client.force_login(worker)
+        self.assertEqual(self.client.get(f"/api/orders/{fresh.pk}/").status_code, 200)
+        self.post(f"orders/{fresh.pk}/ship/")
+        fresh.refresh_from_db()
+        self.assertEqual(s.status(fresh), "completed")
+
+    def test_locker_needs_a_saved_point_and_courier_is_the_default(self):
+        payload = {
+            "customer_id": self.customer.pk,
+            "due_at": (timezone.now() + timedelta(days=1)).isoformat(),
+            "items": [{"variant_id": self.variant.pk, "quantity": 2}],
+            "delivery": "locker",
+            "confirm": False,
+        }
+        self.post("orders/save/", payload, expected=400)
+        payload["delivery_address_id"] = "a1"
+        saved = self.post("orders/save/", payload)
+        order = Order.objects.get(pk=saved.data["id"])
+        self.assertEqual(order.delivery, "locker")
+        self.assertIn("Testowa 1", order.address)
+        created = Order.objects.create(created_by=self.admin)
+        self.assertEqual(created.delivery, "courier")
+
+    def test_shipping_finishes_pickup_and_courier(self):
+        order = self.order(10, pickup=True)
+        self.assertFalse(order.tasks.filter(kind="packing").exists())
+        self.assertTrue(order.tasks.filter(kind="shipping").exists())
+        production = order.tasks.get(kind="production")
+        self.post(f"tasks/{production.pk}/report/", {"units": 4})
+        self.assertEqual(s.status(order), "producing")
+        self.post(f"tasks/{production.pk}/report/", {"units": 6})
+        self.assertEqual(s.status(order), "awaiting_shipment")
+        shipping = order.tasks.get(kind="shipping")
+        self.post(f"tasks/{shipping.pk}/report/", {"units": 10})
+        self.assertEqual(s.status(order), "completed")
+        self.assertEqual(order.shipments.count(), 1)
+
+    def test_one_order_cannot_ship_another_orders_packages(self):
+        first = self.order(10)
+        second = self.order(10)
+        p1, k1 = self.tasks(first)
+        _, k2 = self.tasks(second)
+        self.post(f"tasks/{p1.pk}/report/", {"units": 10})
+        self.post(f"tasks/{k2.pk}/report/", {"units": 1}, expected=400)
+        self.post(f"tasks/{k1.pk}/report/", {"units": 10})
+        self.assertEqual(first.items.first().packed, 10)
+        self.assertEqual(second.items.first().packed, 0)
+        self.assertEqual(second.items.first().produced, 0)
 
     def test_existing_data_migration_preserves_mass_and_addresses(self):
         from importlib import import_module
@@ -466,9 +540,318 @@ class FlowTests(TestCase):
             self.assertEqual(sum(m.delta_g for m in b.movements.all()), b.available_g)
 
 
+    def test_warehouse_shows_materials_and_follows_packages(self):
+        from decimal import Decimal
+        from .models import StockItem
+
+        self.assertTrue(StockItem.objects.filter(code="CUKIER").exists())
+        self.assertTrue(StockItem.objects.filter(code="MASLO").exists())
+        self.assertTrue(StockItem.objects.filter(code="SOL").exists())
+        self.assertTrue(StockItem.objects.filter(code="SYROP").exists())
+        self.assertTrue(StockItem.objects.filter(code="OPAK-15").exists())
+        self.assertTrue(StockItem.objects.filter(code="ETY-30-PRZOD").exists())
+        self.assertTrue(StockItem.objects.filter(code="ETY-400-TYL").exists())
+        order = self.order(10)
+        production, packing = self.tasks(order)
+        self.post(f"tasks/{production.pk}/report/", {"units": 4})
+        stock = StockItem.objects.get(variant=self.variant, group="popcorn")
+        self.assertEqual(stock.quantity, 4)
+        self.post(f"tasks/{packing.pk}/report/", {"units": 3})
+        stock.refresh_from_db()
+        self.assertEqual(stock.quantity, 1)
+        sugar = StockItem.objects.get(code="CUKIER")
+        self.post(f"stock/{sugar.pk}/", {"quantity": "2.500", "reason": "Dostawa"})
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.quantity, Decimal("2.500"))
+        worker = get_user_model().objects.create_user(
+            "stock-worker", password="Test-password-123!"
+        )
+        worker.groups.add(Group.objects.get_or_create(name="production")[0])
+        self.client.force_login(worker)
+        self.post(
+            f"stock/{sugar.pk}/",
+            {"quantity": "9", "reason": "Bez uprawnień"},
+            expected=403,
+        )
+        data = self.client.get("/api/state/").json()
+        self.assertTrue(any(item["code"] == "ETY-15-TYL" for item in data["stock"]))
+        self.assertTrue(any(item["name"] == "Półprodukty" for item in data["categories"]))
+
+    def test_warehouse_allocates_stock_and_accepts_deliveries(self):
+        from decimal import Decimal
+        from .models import StockCategory, StockItem
+
+        s.sync_catalog_stock()
+        stock = StockItem.objects.get(variant=self.variant)
+        self.post(
+            f"stock/{stock.pk}/",
+            {"quantity": "7", "reason": "Stan początkowy"},
+        )
+        order = self.order(10)
+        item = order.items.get()
+        self.assertEqual(item.allocated, 7)
+        production, shipping = self.tasks(order)
+        self.post(f"tasks/{production.pk}/report/", {"units": 4}, expected=400)
+        self.post(f"tasks/{production.pk}/report/", {"units": 3})
+        stock.refresh_from_db()
+        self.assertEqual(stock.quantity, Decimal("10"))
+        self.assertEqual(stock.reserved, Decimal("10"))
+        second = self.order(5)
+        self.assertEqual(second.items.get().allocated, 0)
+        self.post(f"orders/{order.pk}/cancel/", {"reason": "Rezygnacja"})
+        stock.refresh_from_db()
+        second.items.get().refresh_from_db()
+        self.assertEqual(stock.quantity, Decimal("10"))
+        self.assertEqual(second.items.get().allocated, 5)
+        self.assertEqual(stock.reserved, Decimal("5"))
+        category = self.post("stock/categories/", {"name": "Dodatki"}).data["id"]
+        self.assertFalse(StockCategory.objects.get(pk=category).system)
+        product = self.post(
+            "stock/products/",
+            {"category_id": category, "name": "Folia", "unit": "szt"},
+        ).data["id"]
+        self.post(
+            "stock/receipt/",
+            {"stock_id": product, "quantity": "12", "reason": "Dostawa z poniedziałku"},
+        )
+        self.assertEqual(StockItem.objects.get(pk=product).quantity, Decimal("12"))
+        sugar = StockItem.objects.get(code="CUKIER")
+        self.post(
+            "stock/receipt/",
+            {"stock_id": sugar.pk, "quantity": "1.5", "reason": "Worek cukru"},
+        )
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.quantity, Decimal("1.5"))
+        self.post(f"tasks/{shipping.pk}/report/", {"units": 1}, expected=400)
+        worker = get_user_model().objects.create_user(
+            "receipt-worker", password="Test-password-123!"
+        )
+        worker.groups.add(Group.objects.get_or_create(name="production")[0])
+        self.client.force_login(worker)
+        self.post(
+            "stock/receipt/",
+            {"stock_id": sugar.pk, "quantity": "1", "reason": "Bez uprawnień"},
+            expected=403,
+        )
+
+    def test_recipe_consumes_material_and_remembers_supplier(self):
+        from decimal import Decimal
+        from .models import Recipe, StockItem
+
+        sugar = StockItem.objects.get(code="CUKIER")
+        self.post(
+            f"stock/{sugar.pk}/",
+            {"quantity": "1.000", "reason": "Stan początkowy cukru"},
+        )
+        supplier = self.post(
+            "suppliers/",
+            {"name": "Cukrownia", "phone": "500100200", "email": "biuro@cukrownia.test"},
+        ).data["id"]
+        self.post(f"stock/{sugar.pk}/supplier/", {"supplier_id": supplier})
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.supplier.name, "Cukrownia")
+        self.post(
+            "recipes/",
+            {
+                "variant_id": self.variant.pk,
+                "lines": [{"stock_id": sugar.pk, "quantity": "0.020"}],
+            },
+        )
+        order = self.order(10)
+        production, _ = self.tasks(order)
+        report = self.post(f"tasks/{production.pk}/report/", {"units": 10}).data["id"]
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.quantity, Decimal("0.800"))
+        second = self.order(50)
+        production_two, _ = self.tasks(second)
+        self.post(f"tasks/{production_two.pk}/report/", {"units": 50}, expected=400)
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.quantity, Decimal("0.800"))
+        self.post(f"reports/{report}/correct/", {"reason": "Cofnięcie produkcji"})
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.quantity, Decimal("1.000"))
+        popcorn = StockItem.objects.get(variant=self.variant)
+        self.post(
+            "recipes/",
+            {
+                "variant_id": self.variant.pk,
+                "lines": [{"stock_id": popcorn.pk, "quantity": "1"}],
+            },
+            expected=400,
+        )
+        self.post("recipes/", {"variant_id": self.variant.pk, "lines": []})
+        self.assertFalse(Recipe.objects.filter(variant=self.variant).exists())
+        worker = get_user_model().objects.create_user(
+            "recipe-worker", password="Test-password-123!"
+        )
+        worker.groups.add(Group.objects.get_or_create(name="production")[0])
+        self.client.force_login(worker)
+        self.post(
+            "recipes/",
+            {
+                "variant_id": self.variant.pk,
+                "lines": [{"stock_id": sugar.pk, "quantity": "0.010"}],
+            },
+            expected=403,
+        )
+
+    def test_stock_detail_edits_name_supplier_and_unit(self):
+        from decimal import Decimal
+        from .models import StockCategory, StockItem, Supplier
+
+        sugar = StockItem.objects.get(code="CUKIER")
+        self.assertIsNotNone(sugar.category_id)
+        supplier_id = self.post(
+            "suppliers/",
+            {
+                "name": "Młyn",
+                "contact": "Anna",
+                "phone": "500100200",
+                "email": "biuro@mlyn.test",
+            },
+        ).data["id"]
+        self.post(
+            f"stock/{sugar.pk}/edit/",
+            {
+                "name": "Cukier trzcinowy",
+                "category_id": sugar.category_id,
+                "unit": "kg",
+                "supplier_id": supplier_id,
+            },
+        )
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.name, "Cukier trzcinowy")
+        self.assertEqual(sugar.supplier_id, supplier_id)
+        s.sync_catalog_stock()
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.name, "Cukier trzcinowy")
+        self.post(
+            f"stock/{sugar.pk}/",
+            {"quantity": "2.000", "reason": "Stan początkowy"},
+        )
+        self.post(
+            f"stock/{sugar.pk}/edit/",
+            {
+                "name": "Cukier",
+                "category_id": sugar.category_id,
+                "unit": "kg",
+                "supplier_id": supplier_id,
+            },
+        )
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.name, "Cukier")
+        self.assertEqual(sugar.quantity, Decimal("2.000"))
+        self.post(
+            f"stock/{sugar.pk}/edit/",
+            {
+                "name": "Cukier",
+                "category_id": sugar.category_id,
+                "unit": "szt",
+                "supplier_id": supplier_id,
+            },
+            expected=400,
+        )
+        sugar.refresh_from_db()
+        self.assertEqual(sugar.unit, "kg")
+        finished = StockCategory.objects.get(system=True)
+        self.post(
+            f"stock/{sugar.pk}/edit/",
+            {
+                "name": "Cukier",
+                "category_id": finished.pk,
+                "unit": "kg",
+                "supplier_id": supplier_id,
+            },
+            expected=400,
+        )
+        detail = self.client.get(f"/api/stock/{sugar.pk}/detail/")
+        self.assertEqual(detail.status_code, 200, detail.content)
+        self.assertEqual(detail.data["supplier"]["phone"], "500100200")
+        self.assertEqual(detail.data["variant"], None)
+        self.assertTrue(detail.data["moves"])
+        popcorn = StockItem.objects.get(variant=self.variant)
+        self.post(
+            f"stock/{popcorn.pk}/edit/",
+            {
+                "name": "Inna nazwa",
+                "category_id": sugar.category_id,
+                "unit": "szt",
+            },
+            expected=400,
+        )
+        profile = self.client.get(f"/api/stock/{popcorn.pk}/detail/")
+        self.assertEqual(profile.status_code, 200, profile.content)
+        self.assertEqual(profile.data["variant"]["sku"], self.variant.sku)
+        category_id = self.post("stock/categories/", {"name": "Przyprawy"}).data["id"]
+        item_id = self.post(
+            "stock/products/",
+            {"category_id": category_id, "name": "Cynamon", "unit": "kg"},
+        ).data["id"]
+        self.post(
+            f"stock/{item_id}/edit/",
+            {
+                "name": "Cynamon mielony",
+                "category_id": category_id,
+                "unit": "szt",
+                "supplier_id": None,
+            },
+        )
+        item = StockItem.objects.get(pk=item_id)
+        self.assertEqual(item.name, "Cynamon mielony")
+        self.assertEqual(item.unit, "szt")
+        self.assertIsNone(item.supplier_id)
+        self.post(
+            f"suppliers/{supplier_id}/",
+            {"name": "Młyn nowy", "contact": "Jan", "email": "", "phone": "600"},
+        )
+        self.assertEqual(Supplier.objects.get(pk=supplier_id).phone, "600")
+        other = self.post(
+            "suppliers/",
+            {"name": "Drugi młyn", "contact": "", "email": "", "phone": ""},
+        ).data["id"]
+        self.post(
+            f"suppliers/{supplier_id}/",
+            {"name": "Drugi młyn", "contact": "", "email": "", "phone": ""},
+            expected=400,
+        )
+        self.assertNotEqual(Supplier.objects.get(pk=other).pk, supplier_id)
+        worker = get_user_model().objects.create_user(
+            "detail-worker", password="Test-password-123!"
+        )
+        worker.groups.add(Group.objects.get_or_create(name="production")[0])
+        self.client.force_login(worker)
+        seen = self.client.get(f"/api/stock/{sugar.pk}/detail/")
+        self.assertEqual(seen.status_code, 200, seen.content)
+        self.post(
+            f"stock/{sugar.pk}/edit/",
+            {
+                "name": "X",
+                "category_id": sugar.category_id,
+                "unit": "kg",
+            },
+            expected=403,
+        )
+
+
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks required")
 class ConcurrencyTests(TransactionTestCase):
     reset_sequences = True
+
+    def setUp(self):
+        super().setUp()
+        # reset_sequences rewinds identity counters while rows created by
+        # migrations are still present. Advance the stock sequence past them.
+        with connection.cursor() as cursor:
+            for table in ("core_stockitem", "core_stockmove"):
+                cursor.execute(
+                    f"""
+                    SELECT setval(
+                        pg_get_serial_sequence('{table}', 'id'),
+                        COALESCE((SELECT MAX(id) FROM {table}), 1),
+                        (SELECT COUNT(*) > 0 FROM {table})
+                    )
+                    """
+                )
 
     def test_two_workers_cannot_consume_same_batch(self):
         a = get_user_model().objects.create_superuser("a", password="test")
@@ -479,7 +862,11 @@ class ConcurrencyTests(TransactionTestCase):
         )
         customer = Customer.objects.create(name="Customer")
         order = Order.objects.create(
-            customer=customer, created_by=a, due_at=timezone.now()
+            customer=customer,
+            created_by=a,
+            due_at=timezone.now(),
+            delivery="courier",
+            address="Kurier 1",
         )
         item = Item(order=order, variant=variant, quantity=100)
         s.snapshot_item(item, variant)
@@ -487,8 +874,8 @@ class ConcurrencyTests(TransactionTestCase):
         with transaction.atomic():
             s.confirm(order, a)
             p = order.tasks.get(kind="production")
-            s.production_report(p, a, {"grams": 300})
-        task = order.tasks.get(kind="packing")
+            s.production_report(p, a, {"units": 10})
+        task = order.tasks.get(kind="shipping")
         barrier = threading.Barrier(2)
 
         def report(uid):
@@ -513,14 +900,14 @@ class ConcurrencyTests(TransactionTestCase):
             for attempt in range(5):
                 if attempt:
                     with transaction.atomic():
-                        s.production_report(p, a, {"grams": 300})
+                        s.production_report(p, a, {"units": 10})
                 results = list(executor.map(report, [a.pk, b.pk]))
                 self.assertEqual(sorted(results), [200, 400])
                 item.refresh_from_db()
                 self.assertEqual(item.packed, 10 * (attempt + 1))
-                self.assertEqual(s.available(order, product.pk), 0)
+                self.assertEqual(item.produced, 10 * (attempt + 1))
 
-    def test_two_orders_cannot_reserve_same_free_stock(self):
+    def test_two_workers_cannot_produce_the_same_packages(self):
         a = get_user_model().objects.create_superuser("reserve-a", password="test")
         b = get_user_model().objects.create_superuser("reserve-b", password="test")
         product = Product.objects.create(code="STOCK", name="Stock")
@@ -528,33 +915,26 @@ class ConcurrencyTests(TransactionTestCase):
             product=product, sku="STOCK30", name="30g", weight_g=30
         )
         customer = Customer.objects.create(name="Customer")
-
-        def draft(user):
-            order = Order.objects.create(
-                customer=customer, created_by=user, due_at=timezone.now()
-            )
-            item = Item(order=order, variant=variant, quantity=10)
-            s.snapshot_item(item, variant)
-            item.save()
-            return order
-
-        source = draft(a)
+        order = Order.objects.create(
+            customer=customer, created_by=a, due_at=timezone.now()
+        )
+        item = Item(order=order, variant=variant, quantity=10)
+        s.snapshot_item(item, variant)
+        item.save()
         with transaction.atomic():
-            s.confirm(source, a)
-            s.production_report(source.tasks.get(kind="production"), a, {"grams": 600})
-        orders = [draft(a), draft(b)]
+            s.confirm(order, a)
+        task = order.tasks.get(kind="production")
         barrier = threading.Barrier(2)
 
-        def confirm(pair):
-            user, order = pair
+        def report(uid):
             connections.close_all()
             try:
                 client = APIClient()
-                client.force_login(get_user_model().objects.get(pk=user.pk))
+                client.force_login(get_user_model().objects.get(pk=uid))
                 barrier.wait(timeout=10)
                 return client.post(
-                    f"/api/orders/{order.pk}/confirm/",
-                    {},
+                    f"/api/tasks/{task.pk}/report/",
+                    {"units": 10},
                     format="json",
                     HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
                 ).status_code
@@ -562,10 +942,7 @@ class ConcurrencyTests(TransactionTestCase):
                 connections.close_all()
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            self.assertEqual(
-                list(executor.map(confirm, zip([a, b], orders))), [200, 200]
-            )
-        self.assertEqual(
-            sorted(o.tasks.get(kind="production").target_g for o in orders), [0, 300]
-        )
-        self.assertEqual(sum(s.available(o, product.pk) for o in orders), 300)
+            results = list(executor.map(report, [a.pk, b.pk]))
+        self.assertEqual(sorted(results), [200, 400])
+        item.refresh_from_db()
+        self.assertEqual(item.produced, 10)

@@ -23,6 +23,9 @@ export type Variant = {
   custom_label: boolean;
   instruction: string;
   active: boolean;
+  stock_quantity: string;
+  stock_available: string;
+  recipe: { stock_id: number; quantity: string }[];
 };
 export type Customer = {
   delivery_addresses: { id: string; name: string; address: string }[];
@@ -50,6 +53,8 @@ export type Item = {
   product_name: string;
   weight_g: string;
   quantity: number;
+  produced: number;
+  allocated: number;
   packed: number;
   packaging: string;
   instruction: string;
@@ -84,6 +89,8 @@ export type Order = {
   internal_notes: string;
   items: Item[];
   units: number;
+  produced: number;
+  allocated: number;
   packed: number;
   target_g: string;
   produced_g: string;
@@ -125,7 +132,12 @@ export type Task = {
   supplemental: boolean;
   available_g: string;
   item?: Item;
+  items?: Item[];
   customer_name?: string;
+  customer_email?: string;
+  customer_phone?: string;
+  address?: string;
+  delivery?: string;
   batches: Batch[];
 };
 export type Report = {
@@ -143,7 +155,16 @@ export type Report = {
   corrected: boolean;
   label: Label | null;
   batch: string | null;
+  shipment: string | null;
   allocations: { batch: string; grams: string }[];
+};
+export type Shipment = {
+  id: number;
+  number: string;
+  address: string;
+  note: string;
+  created_at: string;
+  lines: { item_id: number; name: string; units: number }[];
 };
 export type Event = {
   id: number;
@@ -152,7 +173,63 @@ export type Event = {
   user: string;
   created_at: string;
 };
-export type Detail = Order & { events: Event[]; reports: Report[] };
+export type Detail = Order & {
+  events: Event[];
+  reports: Report[];
+  shipments: Shipment[];
+};
+export type StockItem = {
+  id: number;
+  code: string;
+  name: string;
+  group: string;
+  unit: string;
+  quantity: string;
+  reserved: string;
+  available: string;
+  category_id: number | null;
+  variant_id: number | null;
+  supplier_id: number | null;
+  supplier_name: string;
+};
+export type StockMoveRow = {
+  id: number;
+  delta: string;
+  quantity_after: string;
+  reason: string;
+  user: string;
+  created_at: string;
+};
+export type StockDetail = StockItem & {
+  moves: StockMoveRow[];
+  used_in: { variant_id: number; name: string; quantity: string }[];
+  variant: {
+    id: number;
+    sku: string;
+    name: string;
+    weight_g: string;
+    packaging: string;
+    custom_label: boolean;
+    instruction: string;
+    product_id: number;
+    product_name: string;
+  } | null;
+  supplier: Supplier | null;
+};
+export type Supplier = {
+  id: number;
+  name: string;
+  contact: string;
+  email: string;
+  phone: string;
+  active: boolean;
+};
+export type StockCategory = {
+  id: number;
+  name: string;
+  system: boolean;
+  position: number;
+};
 export type State = {
   user: User;
   products: Product[];
@@ -161,4 +238,7 @@ export type State = {
   orders: Order[];
   tasks: Task[];
   batches: Batch[];
+  stock: StockItem[];
+  categories: StockCategory[];
+  suppliers: Supplier[];
 };
