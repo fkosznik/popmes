@@ -25,6 +25,7 @@ export type Variant = {
   active: boolean;
 };
 export type Customer = {
+  delivery_addresses: { id: string; name: string; address: string }[];
   id: number;
   name: string;
   contact: string;
@@ -67,6 +68,7 @@ export type Order = {
   id: number;
   number: string;
   customer_id: number | null;
+  delivery_address_id: string;
   customer_name: string;
   customer: Partial<Customer>;
   created_at: string;
@@ -92,7 +94,7 @@ export type Order = {
 export type Batch = {
   id: number;
   number: string;
-  order_id: number;
+  order_id: number | null;
   origin_order_id: number;
   origin_task_id: number;
   product_id: number;

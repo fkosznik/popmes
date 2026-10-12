@@ -26,7 +26,22 @@ class VariantSerializer(serializers.ModelSerializer):
         return value
 
 
+class DeliveryAddressSerializer(serializers.Serializer):
+    id = serializers.CharField(max_length=64)
+    name = serializers.CharField(max_length=180)
+    address = serializers.CharField(max_length=2000)
+
+
 class CustomerSerializer(serializers.ModelSerializer):
+    delivery_addresses = DeliveryAddressSerializer(many=True, required=False)
+
+    def validate_delivery_addresses(self, value):
+        if len(value) > 50 or len({a["id"] for a in value}) != len(value):
+            raise serializers.ValidationError(
+                "Maksymalnie 50 adresów o unikalnych identyfikatorach."
+            )
+        return value
+
     class Meta:
         model = Customer
         fields = "__all__"

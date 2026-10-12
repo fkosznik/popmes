@@ -5,6 +5,7 @@ from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from .models import (
+    Product,
     Task,
     Batch,
     Report,
@@ -221,7 +222,9 @@ def confirm(order, user):
             item=item,
             instruction=item.instruction,
         )
-    for product_id, grams in targets.items():
+    lock_products(targets)
+    for product_id, grams in sorted(targets.items()):
+        grams -= reserve_stock(order, product_id, grams, user)
         variant = order.items.filter(product_id=product_id).first().variant
         Task.objects.create(
             order=order,
@@ -264,6 +267,7 @@ def start(task, user):
 
 def production_report(task, user, data):
     ensure_task(task)
+    lock_products(task.order.items.values_list("product_id", flat=True))
     grams = decimal(data.get("grams"), positive=True)
     waste = decimal(data.get("waste_g", 0))
     if data.get("batch_id"):
@@ -291,6 +295,7 @@ def production_report(task, user, data):
     task.started_at = task.started_at or timezone.now()
     task.save()
     refresh_completion(task.order)
+    release_surplus(task.order, user)
     event(
         task.order,
         user,
@@ -547,3 +552,82 @@ def amend(order, user, data):
             "items": list(order.items.values("id", "quantity")),
         },
     )
+
+
+def lock_products(ids):
+    # NO KEY UPDATE keeps FK checks compatible while serializing each flavor.
+    list(
+        Product.objects.select_for_update(no_key=True).filter(pk__in=ids).order_by("pk")
+    )
+
+
+def reserve_stock(order, product_id, needed, user):
+    remaining = needed
+    for batch in (
+        Batch.objects.select_for_update()
+        .filter(order__isnull=True, product_id=product_id, available_g__gt=0)
+        .order_by("created_at", "pk")
+    ):
+        amount = min(remaining, batch.available_g)
+        if amount <= 0:
+            break
+        movement(batch, None, user, -amount, "Rezerwacja dla " + order.number)
+        allocated = Batch.objects.create(
+            origin=batch.origin,
+            order=order,
+            product_id=product_id,
+            created_at=batch.created_at,
+        )
+        movement(allocated, order, user, amount, "Z magazynu: " + batch.number)
+        event(
+            order,
+            user,
+            "Przydzielono zapas",
+            source=batch.number,
+            batch=allocated.number,
+            grams=str(amount),
+        )
+        remaining -= amount
+    return needed - remaining
+
+
+def release_surplus(order, user):
+    ids = list(order.items.values_list("product_id", flat=True).distinct())
+    lock_products(ids)
+    for pid in sorted(ids):
+        needed = (
+            ZERO
+            if order.cancelled_at
+            else sum(
+                (
+                    (i.quantity - i.packed) * i.weight_g
+                    for i in order.items.filter(product_id=pid)
+                ),
+                ZERO,
+            )
+        )
+        extra = max(ZERO, available(order, pid) - needed)
+        for batch in (
+            Batch.objects.select_for_update()
+            .filter(order=order, product_id=pid, available_g__gt=0)
+            .order_by("-created_at", "-pk")
+        ):
+            amount = min(extra, batch.available_g)
+            if amount <= 0:
+                break
+            movement(batch, order, user, -amount, "Nadwyżka do magazynu")
+            free = Batch.objects.create(
+                origin=batch.origin,
+                order=None,
+                product_id=pid,
+                created_at=batch.created_at,
+            )
+            movement(free, None, user, amount, "Nadwyżka z " + batch.number)
+            event(
+                order,
+                user,
+                "Przekazano nadwyżkę do magazynu",
+                batch=free.number,
+                grams=str(amount),
+            )
+            extra -= amount

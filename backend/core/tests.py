@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import threading
 import uuid
@@ -13,6 +14,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from PIL import Image
 from .models import (
+    Batch,
     Product,
     Variant,
     Customer,
@@ -205,7 +207,8 @@ class FlowTests(TestCase):
         self.post(f"tasks/{p.pk}/report/", {"grams": 150}, expected=400)
         self.post(f"orders/{order.pk}/resume/")
         self.post(f"orders/{order.pk}/cancel/", {"reason": "Rezygnacja klienta"})
-        self.assertEqual(s.available(order, self.product.pk), 150)
+        self.assertEqual(s.available(order, self.product.pk), 0)
+        self.assertEqual(Batch.objects.get(order=None).available_g, 150)
         self.post(f"tasks/{p.pk}/report/", {"grams": 150}, expected=400)
         self.assertTrue(order.events.filter(action="Anulowano zamówienie").exists())
 
@@ -332,6 +335,136 @@ class FlowTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertFalse(Label.objects.exists())
 
+    def test_active_customer_addresses_and_order_snapshot(self):
+        addresses = [
+            {"id": "shop1", "name": "Sklep 1", "address": "Poznań, ul. Testowa 1"},
+            {"id": "shop2", "name": "Sklep 2", "address": "Gorzów, ul. Testowa 2"},
+        ]
+        cid = self.post(
+            "catalog/customers/",
+            {"name": "Sieć sklepów", "active": False, "delivery_addresses": addresses},
+        ).data["id"]
+        customer = Customer.objects.get(pk=cid)
+        self.assertTrue(customer.active)
+        data = {
+            "customer_id": cid,
+            "delivery": "courier",
+            "delivery_address_id": "shop2",
+            "due_at": timezone.now().isoformat(),
+            "confirm": True,
+            "items": [{"variant_id": self.variant.pk, "quantity": 10}],
+        }
+        oid = self.post("orders/save/", data).data["id"]
+        self.assertEqual(
+            Order.objects.get(pk=oid).address, "Sklep 2\nGorzów, ul. Testowa 2"
+        )
+        self.post("catalog/customers/", {"id": cid, "delivery_addresses": []})
+        self.assertIn("Gorzów", Order.objects.get(pk=oid).address)
+        self.post("orders/save/", data, expected=400)
+        self.post("catalog/customers/", {"id": cid, "active": False})
+        customer.refresh_from_db()
+        self.assertFalse(customer.active)
+
+    def test_inline_label_upload_is_atomic_and_idempotent(self):
+        self.variant.custom_label = True
+        self.variant.save()
+        payload = {
+            "customer_id": self.customer.pk,
+            "due_at": timezone.now().isoformat(),
+            "confirm": True,
+            "items": [{"variant_id": self.variant.pk, "quantity": 10}],
+        }
+        key = str(uuid.uuid4())
+
+        def upload(valid=True):
+            file = io.BytesIO()
+            if valid:
+                Image.new("RGB", (2, 2)).save(file, format="PNG")
+            else:
+                file.write(b"not an image")
+            file.seek(0)
+            file.name = "logo.png"
+            return self.client.post(
+                "/api/orders/save/",
+                {"payload": json.dumps(payload), "label_0": file},
+                format="multipart",
+                HTTP_IDEMPOTENCY_KEY=key,
+            )
+
+        self.assertEqual(upload(False).status_code, 400)
+        self.assertFalse(Order.objects.exists())
+        result = upload()
+        self.assertEqual(result.status_code, 200, result.content)
+        self.assertEqual(upload().data, result.data)
+        self.assertEqual(Order.objects.count(), 1)
+        label = Label.objects.get()
+        self.assertIsNone(label.approved_at)
+        self.assertTrue(label.item.custom_label)
+
+    def test_surplus_reserved_before_new_production(self):
+        source = self.order(10)
+        p, _ = self.tasks(source)
+        self.post(f"tasks/{p.pk}/report/", {"grams": 500})
+        self.assertEqual(s.available(source, self.product.pk), 300)
+        self.assertEqual(Batch.objects.get(order=None).available_g, 200)
+        target = self.order(15)
+        production, packing = self.tasks(target)
+        self.assertEqual(production.target_g, 250)
+        self.assertEqual(s.available(target, self.product.pk), 200)
+        self.post(f"tasks/{packing.pk}/report/", {"units": 5})
+        self.assertEqual(s.available(target, self.product.pk), 50)
+        following = self.order(10)
+        self.assertEqual(self.tasks(following)[0].target_g, 300)
+        for batch in Batch.objects.all():
+            self.assertEqual(
+                sum(m.delta_g for m in batch.movements.all()), batch.available_g
+            )
+
+    def test_full_stock_cover_skips_production_and_cancel_releases(self):
+        source = self.order(10)
+        p, _ = self.tasks(source)
+        self.post(f"tasks/{p.pk}/report/", {"grams": 600})
+        target = self.order(10)
+        production, _ = self.tasks(target)
+        self.assertEqual(production.target_g, 0)
+        self.assertTrue(s.complete(production))
+        self.post(f"orders/{target.pk}/cancel/", {"reason": "Rezygnacja"})
+        self.assertEqual(s.available(target, self.product.pk), 0)
+        self.assertEqual(
+            sum(b.available_g for b in Batch.objects.filter(order=None)), 300
+        )
+
+    def test_existing_data_migration_preserves_mass_and_addresses(self):
+        from importlib import import_module
+        from django.apps import apps
+        from .models import Movement
+
+        self.customer.address = "Adres firmy"
+        self.customer.save()
+        order = self.order(10)
+        order.address = "Stary adres sklepu"
+        order.save()
+        task, _ = self.tasks(order)
+        batch = Batch.objects.create(
+            origin=task, order=order, product=self.product, available_g=500
+        )
+        Movement.objects.create(
+            batch=batch, order=order, user=self.admin, delta_g=500, reason="Stary stan"
+        )
+        import_module(
+            "core.migrations.0003_existing_addresses_and_surplus"
+        ).migrate_data(apps, None)
+        self.customer.refresh_from_db()
+        order.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertEqual(batch.available_g, 300)
+        self.assertEqual(Batch.objects.get(order=None).available_g, 200)
+        self.assertEqual(len(self.customer.delivery_addresses), 2)
+        self.assertEqual(order.address, "Stary adres sklepu")
+        self.assertTrue(order.delivery_address_id)
+        for b in Batch.objects.all():
+            self.assertEqual(sum(m.delta_g for m in b.movements.all()), b.available_g)
+
 
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks required")
 class ConcurrencyTests(TransactionTestCase):
@@ -386,3 +519,53 @@ class ConcurrencyTests(TransactionTestCase):
                 item.refresh_from_db()
                 self.assertEqual(item.packed, 10 * (attempt + 1))
                 self.assertEqual(s.available(order, product.pk), 0)
+
+    def test_two_orders_cannot_reserve_same_free_stock(self):
+        a = get_user_model().objects.create_superuser("reserve-a", password="test")
+        b = get_user_model().objects.create_superuser("reserve-b", password="test")
+        product = Product.objects.create(code="STOCK", name="Stock")
+        variant = Variant.objects.create(
+            product=product, sku="STOCK30", name="30g", weight_g=30
+        )
+        customer = Customer.objects.create(name="Customer")
+
+        def draft(user):
+            order = Order.objects.create(
+                customer=customer, created_by=user, due_at=timezone.now()
+            )
+            item = Item(order=order, variant=variant, quantity=10)
+            s.snapshot_item(item, variant)
+            item.save()
+            return order
+
+        source = draft(a)
+        with transaction.atomic():
+            s.confirm(source, a)
+            s.production_report(source.tasks.get(kind="production"), a, {"grams": 600})
+        orders = [draft(a), draft(b)]
+        barrier = threading.Barrier(2)
+
+        def confirm(pair):
+            user, order = pair
+            connections.close_all()
+            try:
+                client = APIClient()
+                client.force_login(get_user_model().objects.get(pk=user.pk))
+                barrier.wait(timeout=10)
+                return client.post(
+                    f"/api/orders/{order.pk}/confirm/",
+                    {},
+                    format="json",
+                    HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+                ).status_code
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            self.assertEqual(
+                list(executor.map(confirm, zip([a, b], orders))), [200, 200]
+            )
+        self.assertEqual(
+            sorted(o.tasks.get(kind="production").target_g for o in orders), [0, 300]
+        )
+        self.assertEqual(sum(s.available(o, product.pk) for o in orders), 300)

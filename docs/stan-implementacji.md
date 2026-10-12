@@ -29,3 +29,15 @@ Testy backendu pokrywają przepływ częściowy, grupowanie smaku, zamrożenie g
 Test Playwright przechodzi w interfejsie: logowanie → klient → zamówienie → dwie porcje produkcji i pakowania → zrealizowanie → wydanie. Sprawdza również szerokość widoku mobilnego.
 
 Workflow GitHub Actions buduje cały zestaw Docker, wykonuje testy PostgreSQL, test przeglądarkowy i porównanie danych po backup/restore. Wynik uruchomienia należy sprawdzić w zakładce Actions; obecność pliku workflow nie jest sama w sobie dowodem przejścia tych testów.
+
+## Zmiany 12 października 2026
+
+- Nowy klient jest zawsze aktywny; później można go archiwizować.
+- Klient ma wiele nazwanych lokalizacji, wybieranych przy zamówieniu.
+- Formularz pozycji „z logo” pozwala dołączyć PDF/PNG/JPG przed zapisem.
+- Ilość sztuk może być chwilowo pusta podczas edycji, bez dopisywania zera z przodu.
+- Produkcja podpowiada pozostałą masę; dodatkowa masa jest osobnym polem. Pole odpadu produkcyjnego usunięto z formularza, historyczne raporty zachowują dane.
+- Wolny magazyn jest rozdzielony od rezerwacji. Przy zatwierdzaniu zamówienia system najpierw przydziela wolne partie FIFO, a następnie planuje brakującą produkcję. Pełne pokrycie magazynem daje zamknięte zadanie produkcyjne o celu 0 kg i otwarte pakowanie.
+- Nadwyżka produkcji jest dzielona na wolną partię z zachowaniem pochodzenia i bilansu ruchów. Anulowanie i zmniejszenie zamówienia uwalnia niewymaganą masę.
+- Korekta raportu produkcji, którego masa została już podzielona/przydzielona do innych partii, wymaga rozliczenia ruchów. Automatyczne odwrócenie całego łańcucha przydziałów nie jest obsługiwane.
+- Zakładka magazynu pokazuje popcorn luzem w kg według smaku; ewidencja gotowych zapakowanych SKU pozostaje oddzielnym przyszłym modułem.

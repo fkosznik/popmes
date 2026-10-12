@@ -196,8 +196,9 @@ export default function App() {
     [mobile, setMobile] = useState(false),
     [users, setUsers] = useState<User[]>([]);
   const [lines, setLines] = useState<
-    { variant_id: number; quantity: number }[]
+    { variant_id: number; quantity: string | number }[]
   >([{ variant_id: 0, quantity: 1 }]);
+  const [customerId, setCustomerId] = useState(0);
   const retryKeys = useRef(new Map<string, string>()),
     mutationLock = useRef(false);
   const can = (...r: string[]) =>
@@ -296,13 +297,15 @@ export default function App() {
   function open(m: ModalState) {
     setError("");
     setModal(m);
-    if (m.kind === "order")
+    if (m.kind === "order") {
+      setCustomerId(m.order?.customer_id || 0);
       setLines(
         m.order?.items.map((i) => ({
           variant_id: i.variant_id,
           quantity: i.quantity,
         })) || [{ variant_id: 0, quantity: 1 }],
       );
+    }
   }
   async function loginSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -438,9 +441,9 @@ export default function App() {
     },
     {
       id: "stock",
-      title: "Partie popcornu",
+      title: "Magazyn popcornu",
       icon: Warehouse,
-      show: can("manager"),
+      show: can("manager", "sales", "production", "packing"),
     },
     {
       id: "catalog",
@@ -1454,6 +1457,50 @@ export default function App() {
               )}
               {page === "stock" && (
                 <section className="panel">
+                  <div className="panel-head">
+                    <div>
+                      <h2>Magazyn gotowego popcornu</h2>
+                      <p>
+                        Popcorn luzem według smaku: wolny zapas oraz masa
+                        zarezerwowana do pakowania.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Smak</th>
+                          <th>Wolne do nowych zamówień</th>
+                          <th>Zarezerwowane</th>
+                          <th>Razem</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {state.products.map((p) => {
+                          const batches = state.batches.filter(
+                            (b) => b.product_id === p.id,
+                          );
+                          const free = batches
+                            .filter((b) => b.order_id === null)
+                            .reduce((a, b) => a + Number(b.available_g), 0);
+                          const reserved = batches
+                            .filter((b) => b.order_id !== null)
+                            .reduce((a, b) => a + Number(b.available_g), 0);
+                          return (
+                            <tr key={p.id}>
+                              <td>{p.name}</td>
+                              <td>
+                                <strong>{kg(free)}</strong>
+                              </td>
+                              <td>{kg(reserved)}</td>
+                              <td>{kg(free + reserved)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                   <Toolbar
                     query={query}
                     setQuery={setQuery}
@@ -1485,21 +1532,24 @@ export default function App() {
                               </td>
                               <td>{b.product_name}</td>
                               <td>
-                                {
-                                  orders.find((o) => o.id === b.order_id)
-                                    ?.number
-                                }
+                                {b.order_id === null
+                                  ? "Wolny magazyn"
+                                  : orders.find((o) => o.id === b.order_id)
+                                      ?.number || `Zamówienie #${b.order_id}`}
                                 <small>
-                                  {[
-                                    "completed",
-                                    "cancelled",
-                                    "issued",
-                                  ].includes(
-                                    orders.find((o) => o.id === b.order_id)
-                                      ?.status || "",
-                                  )
-                                    ? "Nadwyżka · do decyzji"
-                                    : "Przypisana do zamówienia"}
+                                  {b.order_id === null
+                                    ? "Dostępna do rezerwacji"
+                                    : [
+                                          "completed",
+                                          "cancelled",
+                                          "issued",
+                                        ].includes(
+                                          orders.find(
+                                            (o) => o.id === b.order_id,
+                                          )?.status || "",
+                                        )
+                                      ? "Nadwyżka · do decyzji"
+                                      : "Przypisana do zamówienia"}
                                 </small>
                               </td>
                               <td>
@@ -1507,6 +1557,7 @@ export default function App() {
                               </td>
                               <td>
                                 <button
+                                  disabled={!can("manager")}
                                   onClick={() =>
                                     open({ kind: "stock", batch: b })
                                   }
@@ -1708,7 +1759,7 @@ export default function App() {
                   </span>
                   {i.label && (
                     <a href={i.label.url} className="text-button">
-                      Pobierz
+                      Pobierz · {i.label.filename}
                     </a>
                   )}
                   {i.label &&
@@ -1881,21 +1932,37 @@ export default function App() {
                     version: modal.order?.version,
                     customer_id: d.customer_id ? Number(d.customer_id) : null,
                     due_at: fromWarsaw(String(d.due_at || "")),
-                    items: lines.filter((l) => l.variant_id),
+                    items: lines
+                      .filter((l) => l.variant_id)
+                      .map((l) => ({ ...l, quantity: Number(l.quantity) })),
                     confirm:
                       (e.nativeEvent as SubmitEvent).submitter?.getAttribute(
                         "value",
                       ) === "confirm",
                   };
+                  const multipart = new FormData();
+                  multipart.append("payload", JSON.stringify(data));
+                  let uploadIndex = 0;
+                  lines.forEach((line, index) => {
+                    if (!line.variant_id) return;
+                    const file = f.get(`label_${index}`);
+                    if (file instanceof File && file.size)
+                      multipart.append(`label_${uploadIndex}`, file);
+                    uploadIndex++;
+                  });
+                  data = multipart;
                 } else if (modal.kind === "report") {
                   const t = modal.task!;
                   path = `tasks/${t.id}/report/`;
                   data =
                     t.kind === "production"
                       ? {
-                          grams: String(Number(num(f.get("kg"))) * 1000),
-                          waste_g: String(
-                            Number(num(f.get("waste_kg"))) * 1000,
+                          grams: String(
+                            Math.round(
+                              (Number(num(f.get("kg"))) +
+                                Number(num(f.get("extra_kg")))) *
+                                1000000,
+                            ) / 1000,
                           ),
                           batch_id: d.batch_id ? Number(d.batch_id) : null,
                           note: d.note,
@@ -1930,7 +1997,14 @@ export default function App() {
                   data = {
                     ...d,
                     ...(modal.entity ? { id: modal.entity.id } : {}),
-                    active: f.has("active"),
+                    active: modal.entity ? f.has("active") : true,
+                    ...(modal.catalog === "customers"
+                      ? {
+                          delivery_addresses: JSON.parse(
+                            String(d.delivery_addresses || "[]"),
+                          ),
+                        }
+                      : {}),
                     ...(modal.catalog === "variants"
                       ? {
                           weight_g: num(f.get("weight_g")),
@@ -1996,7 +2070,8 @@ export default function App() {
                     <Field label="Klient">
                       <select
                         name="customer_id"
-                        defaultValue={modal.order?.customer_id || ""}
+                        value={customerId || ""}
+                        onChange={(e) => setCustomerId(Number(e.target.value))}
                       >
                         <option value="">Wybierz klienta</option>
                         {state.customers
@@ -2035,10 +2110,29 @@ export default function App() {
                       </select>
                     </Field>
                     <Field label="Adres dostawy (wymagany dla kuriera)" wide>
-                      <input
-                        name="address"
-                        defaultValue={modal.order?.address || ""}
-                      />
+                      <select
+                        name="delivery_address_id"
+                        key={customerId}
+                        defaultValue={
+                          customerId === modal.order?.customer_id
+                            ? modal.order.delivery_address_id
+                            : ""
+                        }
+                      >
+                        <option value="">Wybierz lokalizację klienta</option>
+                        {(
+                          state.customers.find((c) => c.id === customerId)
+                            ?.delivery_addresses || []
+                        ).map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name} · {a.address}
+                          </option>
+                        ))}
+                      </select>
+                      <small>
+                        Adresy sklepów dodasz w edycji klienta. Dla odbioru
+                        osobistego wybór jest opcjonalny.
+                      </small>
                     </Field>
                   </div>
                   <div className="form-section-head">
@@ -2090,7 +2184,13 @@ export default function App() {
                           setLines(
                             lines.map((x, i) =>
                               i === index
-                                ? { ...x, quantity: Number(e.target.value) }
+                                ? {
+                                    ...x,
+                                    quantity: e.target.value.replace(
+                                      /^0+(?=\d)/,
+                                      "",
+                                    ),
+                                  }
                                 : x,
                             ),
                           )
@@ -2107,6 +2207,26 @@ export default function App() {
                       >
                         <X size={16} />
                       </button>
+                      {state.variants.find((v) => v.id === l.variant_id)
+                        ?.custom_label && (
+                        <label
+                          className="field wide"
+                          style={{ gridColumn: "1 / -1" }}
+                        >
+                          <span>
+                            Grafika / etykieta dla pozycji {index + 1}
+                          </span>
+                          <input
+                            type="file"
+                            name={`label_${index}`}
+                            accept=".pdf,.png,.jpg,.jpeg"
+                          />
+                          <small>
+                            PDF, PNG lub JPG do 20 MB. Po zapisaniu zatwierdź
+                            grafikę w szczegółach zamówienia.
+                          </small>
+                        </label>
+                      )}
                     </div>
                   ))}
                   <div className="order-total">
@@ -2120,7 +2240,7 @@ export default function App() {
                               state.variants.find((v) => v.id === l.variant_id)
                                 ?.weight_g || 0,
                             ) *
-                              l.quantity,
+                              Number(l.quantity),
                           0,
                         ),
                       )}
@@ -2147,8 +2267,9 @@ export default function App() {
                     </Field>
                   </div>
                   <p className="form-help">
-                    Etykiety dodasz w szczegółach zapisanego zamówienia.
-                    Personalizowane pakowanie poczeka na ich zatwierdzenie.
+                    Zapas jest rezerwowany przy zatwierdzaniu zamówienia.
+                    Produkcja obejmie tylko brakującą masę. Personalizowane
+                    pakowanie poczeka na zatwierdzenie grafiki.
                   </p>
                 </>
               )}
@@ -2170,12 +2291,37 @@ export default function App() {
                         <Field label="Gotowy popcorn (kg)">
                           <input
                             name="kg"
+                            aria-label="Gotowy popcorn (kg)"
                             type="number"
                             min="0.001"
                             step="0.001"
+                            defaultValue={
+                              Math.max(
+                                0,
+                                Number(modal.task!.target_g) -
+                                  Number(modal.task!.produced_g),
+                              ) / 1000
+                            }
                             required
                             autoFocus
                           />
+                          <small>
+                            Pozostała ilość z planu. Zmniejsz ją przy częściowej
+                            produkcji.
+                          </small>
+                        </Field>
+                        <Field label="Dodatkowy popcorn ponad plan (kg)">
+                          <input
+                            name="extra_kg"
+                            type="number"
+                            min="0"
+                            step="0.001"
+                            placeholder="0"
+                          />
+                          <small>
+                            Nadwyżka ponad potrzeby zamówienia trafi do wolnego
+                            magazynu.
+                          </small>
                         </Field>
                         <Field label="Partia">
                           <select name="batch_id">
@@ -2235,21 +2381,17 @@ export default function App() {
                         </Field>
                       </>
                     )}
-                    <Field
-                      label={
-                        modal.task!.kind === "production"
-                          ? "Odpad produkcyjny (kg)"
-                          : "Straty wliczone w zużycie (kg)"
-                      }
-                    >
-                      <input
-                        name="waste_kg"
-                        type="number"
-                        min="0"
-                        step="0.001"
-                        defaultValue="0"
-                      />
-                    </Field>
+                    {modal.task!.kind === "packing" && (
+                      <Field label="Straty wliczone w zużycie (kg)">
+                        <input
+                          name="waste_kg"
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          defaultValue="0"
+                        />
+                      </Field>
+                    )}
                     <Field label="Komentarz" wide>
                       <textarea
                         name="note"
@@ -2712,20 +2854,90 @@ function CatalogForm({
             <Field label="NIP">
               <input name="tax_id" defaultValue={c?.tax_id} />
             </Field>
-            <Field label="Adres" wide>
+            <Field label="Adres firmy / rozliczeniowy" wide>
               <textarea name="address" defaultValue={c?.address} />
             </Field>
+            <DeliveryAddresses initial={c?.delivery_addresses || []} />
           </>
         )}
       </div>
-      <label className="check-field">
-        <input
-          type="checkbox"
-          name="active"
-          defaultChecked={entity ? entity.active : true}
-        />
-        Aktywny — dostępny przy nowych zamówieniach
-      </label>
+      {entity ? (
+        <label className="check-field">
+          <input type="checkbox" name="active" defaultChecked={entity.active} />
+          Aktywny — dostępny przy nowych zamówieniach
+        </label>
+      ) : (
+        <p className="form-help">Nowy wpis będzie automatycznie aktywny.</p>
+      )}
     </>
+  );
+}
+
+function DeliveryAddresses({
+  initial,
+}: {
+  initial: Customer["delivery_addresses"];
+}) {
+  const [addresses, setAddresses] = useState(initial);
+  return (
+    <div className="wide">
+      <div className="form-section-head">
+        <h3>Adresy dostawy / sklepy</h3>
+        <button
+          type="button"
+          className="text-button"
+          onClick={() =>
+            setAddresses([
+              ...addresses,
+              { id: requestKey(), name: "", address: "" },
+            ])
+          }
+        >
+          Dodaj adres dostawy
+        </button>
+      </div>
+      <input
+        type="hidden"
+        name="delivery_addresses"
+        value={JSON.stringify(addresses)}
+      />
+      {addresses.map((a, index) => (
+        <div key={a.id} className="form-grid">
+          <Field label={`Nazwa lokalizacji ${index + 1}`}>
+            <input
+              required
+              value={a.name}
+              onChange={(e) =>
+                setAddresses(
+                  addresses.map((x) =>
+                    x.id === a.id ? { ...x, name: e.target.value } : x,
+                  ),
+                )
+              }
+            />
+          </Field>
+          <Field label={`Adres dostawy ${index + 1}`}>
+            <textarea
+              required
+              value={a.address}
+              onChange={(e) =>
+                setAddresses(
+                  addresses.map((x) =>
+                    x.id === a.id ? { ...x, address: e.target.value } : x,
+                  ),
+                )
+              }
+            />
+          </Field>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setAddresses(addresses.filter((x) => x.id !== a.id))}
+          >
+            Usuń lokalizację {index + 1}
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }

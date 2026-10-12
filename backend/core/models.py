@@ -36,6 +36,7 @@ class Variant(models.Model):
 
 
 class Customer(models.Model):
+    delivery_addresses = models.JSONField(default=list, blank=True)
     name = models.CharField(max_length=180)
     contact = models.CharField(max_length=180, blank=True)
     email = models.EmailField(blank=True)
@@ -52,6 +53,7 @@ class Order(models.Model):
         Customer, null=True, blank=True, on_delete=models.PROTECT
     )
     customer_snapshot = models.JSONField(default=dict)
+    delivery_address_id = models.CharField(max_length=64, blank=True)
     due_at = models.DateTimeField(null=True, blank=True)
     priority = models.CharField(max_length=10, default="normal")
     delivery = models.CharField(max_length=15, default="pickup")
@@ -112,7 +114,9 @@ class Task(models.Model):
 
 class Batch(models.Model):
     origin = models.ForeignKey(Task, related_name="batches", on_delete=models.PROTECT)
-    order = models.ForeignKey(Order, related_name="batches", on_delete=models.PROTECT)
+    order = models.ForeignKey(
+        Order, null=True, blank=True, related_name="batches", on_delete=models.PROTECT
+    )
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     created_at = models.DateTimeField(default=timezone.now)
     available_g = mass(default=0)
@@ -171,7 +175,7 @@ class Report(models.Model):
 
 class Movement(models.Model):
     batch = models.ForeignKey(Batch, related_name="movements", on_delete=models.PROTECT)
-    order = models.ForeignKey(Order, on_delete=models.PROTECT)
+    order = models.ForeignKey(Order, null=True, blank=True, on_delete=models.PROTECT)
     report = models.ForeignKey(
         Report, null=True, related_name="movements", on_delete=models.PROTECT
     )

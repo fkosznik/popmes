@@ -29,10 +29,10 @@ Polecenie nie tworzy dodatkowych kont ani nie nadpisuje istniejących danych. Mo
 
 ## Pierwsze zamówienie
 
-1. W **Klientach** dodaj odbiorcę.
-2. W **Zamówieniach** kliknij **Nowe zamówienie**, wybierz klienta, termin, produkty i sztuki, następnie **Zatwierdź do realizacji**.
+1. W **Klientach** dodaj odbiorcę (automatycznie aktywny) i jego lokalizacje dostawy.
+2. W **Zamówieniach** kliknij **Nowe zamówienie**, wybierz klienta, zapisany adres dostawy, termin, produkty i sztuki. Przy produkcie „z logo” możesz od razu wgrać grafikę. **Zatwierdź do realizacji** rezerwuje wolny zapas FIFO według smaku; produkcja obejmuje tylko brakującą masę.
 3. W szczegółach pozycji z logo wgraj PDF, PNG lub JPG i zatwierdź etykietę.
-4. W **Produkcji** rozpocznij zadanie i zgłoś gotową masę w kg. Możesz zgłaszać częściami.
+4. W **Produkcji** rozpocznij zadanie. Formularz zgłoszenia podpowie pozostałą masę z planu w kg: możesz ją zmniejszyć dla wykonania częściowego lub wpisać nadwyżkę w osobnym polu. Nadwyżka ponad zapotrzebowanie trafia do wolnego magazynu.
 5. W **Pakowaniu** zgłoś sztuki. System pobiera masę z wybranej partii albo najstarszych dostępnych partii tego zamówienia.
 6. Po zakończeniu wszystkich pozycji zamówienie ma status **Zrealizowane**. Sprzedaż oznacza **Wydane**.
 
@@ -133,3 +133,11 @@ Lokalny rozwój bez Dockera: Python 3.12, `pip install -r backend/requirements.t
 - [Specyfikacja funkcjonalna](docs/specyfikacja.md)
 - [Architektura i API](docs/architektura.md)
 - [Stan implementacji i dalszy rozwój](docs/stan-implementacji.md)
+
+## Aktualizacja: adresy i wspólny magazyn
+
+Widok **Magazyn popcornu** pokazuje per smak wolną masę, masę zarezerwowaną i łączny stan. To magazyn gotowego popcornu luzem (kg), nie osobny magazyn już zapakowanych SKU. Zapas zarezerwowany dla innego zamówienia nie jest dostępny do ponownego przydzielenia. Sam szkic nie rezerwuje stanu. Anulowanie zwalnia pozostałą masę, a zmniejszenie zamówienia uwalnia nadwyżkę.
+
+Migracje 0002/0003 dodają adresy klienta i wolny magazyn. Zachowują historię zamówień, przenoszą istniejący adres klienta na listę lokalizacji i rozdzielają dotychczasową nadwyżkę partii na wolny zapas z zapisami w historii ruchów. Przed aktualizacją wykonaj `bash scripts/backup.sh`, potem `docker compose up -d --build`. Migracja danych 0003 jest nieodwracalna; powrót do poprzedniej wersji wymaga odtworzenia kopii.
+
+Grafika dodana w zamówieniu nadal wymaga zatwierdzenia przed pakowaniem. Adres zapisany w zamówieniu jest kopią wybranej lokalizacji: późniejsza edycja klienta nie zmienia historycznych zamówień.

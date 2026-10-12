@@ -150,6 +150,7 @@ def order_data(order):
         "priority": order.priority,
         "delivery": order.delivery,
         "address": order.address,
+        "delivery_address_id": order.delivery_address_id,
         "status": status(order),
         "hold_reason": order.hold_reason,
         "version": order.version,

@@ -201,7 +201,7 @@ def state(request):
                     "origin"
                 )
             ]
-            if "manager" in r
+            if commercial or "production" in r or "packing" in r
             else [],
         }
     )
@@ -224,7 +224,10 @@ def catalog(request, kind):
         if request.data.get("id")
         else None
     )
-    form = serializer(instance, data=request.data, partial=bool(instance))
+    payload = dict(request.data)
+    if kind == "customers" and not instance:
+        payload["active"] = True
+    form = serializer(instance, data=payload, partial=bool(instance))
     form.is_valid(raise_exception=True)
     value = form.save()
     s.event(None, request.user, "Zapisano katalog", kind=kind, id=value.pk)
@@ -236,6 +239,18 @@ def catalog(request, kind):
 def save_order(request):
     s.permit(request.user, "sales", "manager")
     data = request.data
+    if "payload" in data:
+        try:
+            data = json.loads(data["payload"])
+        except (ValueError, TypeError):
+            raise ValidationError("Niepoprawny formularz zamówienia.")
+    if not isinstance(data, dict):
+        raise ValidationError("Niepoprawny formularz zamówienia.")
+    uploads = {}
+    for index, entry in enumerate(data.get("items", [])):
+        upload = request.FILES.get(f"label_{index}")
+        if upload:
+            uploads[index] = (upload, validate_file(upload))
     if data.get("id"):
         order = locked_order(data["id"])
         if order.confirmed_at or order.cancelled_at:
@@ -274,8 +289,20 @@ def save_order(request):
     ]:
         if field in data:
             setattr(order, field, str(data[field])[:4000])
+    address_id = str(data.get("delivery_address_id", ""))
+    if address_id:
+        addresses = order.customer.delivery_addresses if order.customer else []
+        address = next((a for a in addresses if a["id"] == address_id), None)
+        if not address:
+            raise ValidationError("Wybierz adres należący do wybranego klienta.")
+        order.address = address["name"] + "\n" + address["address"]
+    elif order.delivery == "courier":
+        raise ValidationError("Wybierz zapisany adres dostawy klienta.")
+    else:
+        order.address = ""
+    order.delivery_address_id = address_id
     order.save()
-    for entry in data.get("items", []):
+    for index, entry in enumerate(data.get("items", [])):
         variant = get_object_or_404(
             Variant.objects.select_related("product"),
             pk=entry["variant_id"],
@@ -285,6 +312,16 @@ def save_order(request):
         item = Item(order=order, variant=variant, quantity=s.integer(entry["quantity"]))
         s.snapshot_item(item, variant)
         item.save()
+        if index in uploads:
+            upload, mime = uploads[index]
+            Label.objects.create(
+                item=item,
+                version=1,
+                file=upload,
+                filename=Path(upload.name).name[:200],
+                mime=mime,
+                uploaded_by=request.user,
+            )
     s.event(order, request.user, "Zapisano szkic")
     if data.get("confirm") is True:
         s.confirm(order, request.user)
@@ -329,6 +366,7 @@ def order_action(request, pk, action):
         s.confirm(order, request.user)
     elif action == "amend":
         s.amend(order, request.user, request.data)
+        s.release_surplus(order, request.user)
     elif action == "replenish":
         s.replenish(order, request.user)
     elif action == "hold":
@@ -349,6 +387,7 @@ def order_action(request, pk, action):
         order.save(update_fields=["cancelled_at"])
         s.stop_sessions(order=order)
         s.event(order, request.user, "Anulowano zamówienie", reason=why)
+        s.release_surplus(order, request.user)
     elif action == "issue":
         if s.status(order) != "completed" or order.hold_reason:
             raise ValidationError("Najpierw zakończ wszystkie pozycje i usuń blokadę.")
@@ -542,19 +581,26 @@ def stock_action(request, pk):
     s.permit(request.user, "manager")
     initial = get_object_or_404(Batch, pk=pk)
     target_id = request.data.get("order_id")
-    ids = sorted(set([initial.order_id] + ([int(target_id)] if target_id else [])))
+    ids = sorted(
+        {
+            i
+            for i in [initial.order_id, int(target_id) if target_id else None]
+            if i is not None
+        }
+    )
     orders = {
         o.pk: o
         for o in Order.objects.select_for_update().filter(pk__in=ids).order_by("pk")
     }
+    s.lock_products([initial.product_id])
     batch = Batch.objects.select_for_update().get(pk=pk)
     if batch.order_id != initial.order_id:
         raise ValidationError("Partia została przeniesiona. Odśwież dane.")
-    source = orders[batch.order_id]
+    source = orders.get(batch.order_id)
     why = s.reason(request.data)
     if target_id:
         target = orders.get(int(target_id))
-        if not target or target.pk == source.pk or not target.confirmed_at:
+        if not target or (source and target.pk == source.pk) or not target.confirmed_at:
             raise ValidationError("Wybierz inne zatwierdzone zamówienie.")
         s.ensure_open(target)
         if not target.items.filter(product=batch.product).exists():
@@ -566,7 +612,13 @@ def stock_action(request, pk):
         s.movement(batch, source, request.user, -grams, "Transfer do " + target.number)
         batch.order = target
         batch.save(update_fields=["order"])
-        s.movement(batch, target, request.user, grams, "Transfer z " + source.number)
+        s.movement(
+            batch,
+            target,
+            request.user,
+            grams,
+            "Transfer z " + (source.number if source else "magazynu"),
+        )
         s.event(
             target,
             request.user,
