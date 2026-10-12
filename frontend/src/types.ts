@@ -210,6 +210,9 @@ export type StockItem = {
   available: string;
   category_id: number | null;
   variant_id: number | null;
+  artwork_sha256: string;
+  artwork_version: number | null;
+  artwork_unknown: boolean;
   supplier_id: number | null;
   supplier_name: string;
 };

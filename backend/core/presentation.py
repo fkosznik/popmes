@@ -34,24 +34,26 @@ def workspaces_data():
 
 
 def user_data(user):
+    # Reading the session must not insert a profile. The account form creates it on save.
     try:
         profile = user.profile
     except ObjectDoesNotExist:
-        profile = Profile.objects.create(user=user)
+        profile = None
+    appearance = profile.appearance if profile else "light"
     return {
         "id": user.pk,
         "username": user.username,
         "name": user.first_name or user.username,
         "email": user.email,
-        "phone": profile.phone,
-        "street": profile.street,
-        "postal_code": profile.postal_code,
-        "city": profile.city,
-        "country": profile.country,
-        "language": profile.language,
-        "timezone": profile.timezone,
-        "start_page": profile.start_page,
-        "appearance": profile.appearance if profile.appearance == "dark" else "light",
+        "phone": profile.phone if profile else "",
+        "street": profile.street if profile else "",
+        "postal_code": profile.postal_code if profile else "",
+        "city": profile.city if profile else "",
+        "country": profile.country if profile else "Polska",
+        "language": profile.language if profile else "pl",
+        "timezone": profile.timezone if profile else "Europe/Warsaw",
+        "start_page": profile.start_page if profile else "dashboard",
+        "appearance": appearance if appearance == "dark" else "light",
         "roles": roles(user),
         "active": user.is_active,
     }
@@ -179,6 +181,9 @@ def stock_data(item):
         "available": str(available),
         "category_id": item.category_id,
         "variant_id": item.variant_id,
+        "artwork_sha256": item.artwork_sha256,
+        "artwork_version": item.artwork_version,
+        "artwork_unknown": item.artwork_unknown,
         "supplier_id": item.supplier_id,
         "supplier_name": item.supplier.name if item.supplier_id else "",
     }

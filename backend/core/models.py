@@ -187,6 +187,9 @@ class Label(models.Model):
     approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.PROTECT, related_name="+"
     )
+    # File hash identifies the design. A later upload is a new version and
+    # does not retag packs already produced against an earlier file.
+    content_sha256 = models.CharField(max_length=64, blank=True, default="")
 
     class Meta:
         constraints = [
@@ -311,14 +314,81 @@ class StockItem(models.Model):
     supplier = models.ForeignKey(
         Supplier, null=True, blank=True, related_name="materials", on_delete=models.PROTECT
     )
+    # Finished logo packs are a separate lot: same catalog variant, but only
+    # the matching design hash and label version may be reserved. Empty hash
+    # and artwork_unknown=False is the shared pool for standard products.
+    # artwork_unknown marks legacy logo stock whose graphic cannot be proven.
+    artwork_sha256 = models.CharField(max_length=64, blank=True, default="")
+    artwork_version = models.PositiveIntegerField(null=True, blank=True)
+    artwork_unknown = models.BooleanField(default=False)
+    label = models.ForeignKey(
+        Label, null=True, blank=True, related_name="stock_lots", on_delete=models.PROTECT
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["variant"],
-                condition=Q(variant__isnull=False),
-                name="one_stock_per_variant",
+                condition=Q(variant__isnull=False, artwork_unknown=False, artwork_sha256=""),
+                name="one_plain_stock_per_variant",
+            ),
+            models.UniqueConstraint(
+                fields=["variant", "artwork_sha256", "artwork_version"],
+                condition=~Q(artwork_sha256=""),
+                name="one_stock_per_artwork_version",
+            ),
+            models.UniqueConstraint(
+                fields=["variant"],
+                condition=Q(artwork_unknown=True),
+                name="one_unknown_artwork_stock",
+            ),
+            models.CheckConstraint(
+                condition=Q(quantity__gte=0), name="stock_quantity_nonnegative"
+            ),
+            models.CheckConstraint(
+                condition=Q(reserved__gte=0), name="stock_reserved_nonnegative"
+            ),
+            models.CheckConstraint(
+                condition=Q(reserved__lte=models.F("quantity")),
+                name="stock_reserved_lte_quantity",
+            ),
+            models.CheckConstraint(
+                condition=Q(artwork_sha256="") | Q(artwork_version__isnull=False),
+                name="artwork_stock_has_version",
+            ),
+            models.CheckConstraint(
+                condition=Q(artwork_unknown=False) | Q(artwork_sha256=""),
+                name="unknown_artwork_has_no_hash",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["variant", "artwork_sha256", "artwork_version"],
+                name="stock_artwork_lookup",
             )
+        ]
+
+
+class ItemLot(models.Model):
+    """Units of one order line held in one finished-goods lot."""
+
+    item = models.ForeignKey(Item, related_name="lots", on_delete=models.CASCADE)
+    stock = models.ForeignKey(
+        StockItem, related_name="order_holds", on_delete=models.PROTECT
+    )
+    allocated = models.PositiveIntegerField(default=0)
+    produced = models.PositiveIntegerField(default=0)
+    packed = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["item", "stock"], name="one_lot_hold_per_stock"
+            ),
+            models.CheckConstraint(
+                condition=Q(packed__lte=models.F("allocated") + models.F("produced")),
+                name="lot_packed_lte_ready",
+            ),
         ]
 
 

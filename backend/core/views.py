@@ -227,7 +227,9 @@ def state(request):
         stock = [stock_data(item) for item in s.stock_rows()]
         categories = [category_data(item) for item in s.category_rows()]
         stock_by_variant = {
-            item["variant_id"]: item for item in stock if item["variant_id"]
+            item["variant_id"]: item
+            for item in stock
+            if item["variant_id"] and not item["artwork_sha256"] and not item["artwork_unknown"]
         }
     variants = VariantSerializer(
         Variant.objects.all().order_by("name"), many=True
@@ -292,7 +294,7 @@ def catalog(request, kind):
     form.is_valid(raise_exception=True)
     value = form.save()
     if kind == "variants":
-        s.sync_catalog_stock()
+        s.sync_catalog_stock(value)
     s.event(None, request.user, "Zapisano katalog", kind=kind, id=value.pk)
     return {"id": value.pk}
 
@@ -313,7 +315,7 @@ def save_order(request):
     for index, entry in enumerate(data.get("items", [])):
         upload = request.FILES.get(f"label_{index}")
         if upload:
-            uploads[index] = (upload, validate_file(upload))
+            uploads[index] = (upload, *validate_file(upload))
     if data.get("id"):
         order = locked_order(data["id"])
         if order.confirmed_at or order.cancelled_at:
@@ -383,13 +385,14 @@ def save_order(request):
         s.snapshot_item(item, variant)
         item.save()
         if index in uploads:
-            upload, mime = uploads[index]
+            upload, mime, digest = uploads[index]
             Label.objects.create(
                 item=item,
                 version=1,
                 file=upload,
                 filename=Path(upload.name).name[:200],
                 mime=mime,
+                content_sha256=digest,
                 uploaded_by=request.user,
             )
     s.event(order, request.user, "Zapisano szkic")
@@ -559,12 +562,12 @@ def validate_file(upload):
             document = PdfReader(io.BytesIO(content), strict=True)
             if document.is_encrypted or not len(document.pages):
                 raise ValueError()
-            return "application/pdf"
+            return "application/pdf", s.file_sha256(content)
         image = Image.open(io.BytesIO(content))
         image.verify()
         if image.format not in ["PNG", "JPEG"]:
             raise ValueError()
-        return "image/png" if image.format == "PNG" else "image/jpeg"
+        return "image/png" if image.format == "PNG" else "image/jpeg", s.file_sha256(content)
     except Exception:
         raise ValidationError("Plik nie jest poprawnym PDF, PNG ani JPG.")
 
@@ -577,7 +580,7 @@ def upload_label(request, pk):
     order = locked_order(item.order_id)
     s.ensure_open(order)
     upload = request.FILES.get("file")
-    mime = validate_file(upload)
+    mime, digest = validate_file(upload)
     version = (item.labels.aggregate(v=Max("version"))["v"] or 0) + 1
     label = Label.objects.create(
         item=item,
@@ -585,6 +588,7 @@ def upload_label(request, pk):
         file=upload,
         filename=Path(upload.name).name[:200],
         mime=mime,
+        content_sha256=digest,
         uploaded_by=request.user,
     )
     for task in item.tasks.filter(kind="production"):
@@ -612,6 +616,7 @@ def approve_label(request, pk):
     label.approved_at = timezone.now()
     label.approved_by = request.user
     label.save()
+    s.allocate_custom(label.item, request.user, order)
     s.event(
         order,
         request.user,

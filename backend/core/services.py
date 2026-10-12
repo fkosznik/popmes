@@ -1,11 +1,14 @@
 """Business operations. Call under transaction.atomic with the order row locked."""
 
+import hashlib
 from decimal import Decimal, InvalidOperation
 from django.db.models import Max, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from .models import (
     Item,
+    ItemLot,
+    Label,
     Product,
     Variant,
     Task,
@@ -288,7 +291,6 @@ def confirm(order, user):
             raise ValidationError(f"Produkt {variant.name} jest nieaktywny.")
         snapshot_item(item, variant)
         item.save()
-    sync_catalog_stock()
     for item in items:
         allocate_item(item, user, order)
         item.refresh_from_db()
@@ -372,9 +374,7 @@ def production_report(task, user, data):
     )
     item.produced += units
     item.save(update_fields=["produced"])
-    adjust_variant(
-        item.variant, units, units, user, "Produkcja opakowań", report
-    )
+    add_finished(item, units, user, report, "Produkcja opakowań")
     consume_recipe(item.variant, units, user, report)
     task.started_at = task.started_at or timezone.now()
     task.save(update_fields=["started_at"])
@@ -421,9 +421,7 @@ def shipping_report(task, user, data):
     )
     item.packed += units
     item.save(update_fields=["packed"])
-    adjust_variant(
-        item.variant, -units, -units, user, "Wysłano", report
-    )
+    remove_finished(item, units, user, report, "Wysłano")
     task.started_at = task.started_at or timezone.now()
     task.save(update_fields=["started_at"])
     refresh_completion(order)
@@ -500,7 +498,7 @@ def ship_order(order, user):
         )
         item.packed += units
         item.save(update_fields=["packed"])
-        adjust_variant(item.variant, -units, -units, user, "Wysłano", report)
+        remove_finished(item, units, user, report, "Wysłano")
         task.started_at = task.started_at or timezone.now()
         task.save(update_fields=["started_at"])
         total += units
@@ -551,6 +549,7 @@ def reverse_report(report, user, data):
                 raise ValidationError(
                     "Najpierw cofnij wysyłkę tych opakowań."
                 )
+            reverse_custom_holds(item, report)
             item.produced -= report.units
             item.save(update_fields=["produced"])
             reverse_stock(report, user, "Korekta produkcji: " + why)
@@ -569,6 +568,7 @@ def reverse_report(report, user, data):
         item = locked_item(task)
         if item.packed < report.units:
             raise ValidationError("Raport nie pasuje do stanu przesyłki.")
+        reverse_custom_holds(item, report)
         item.packed -= report.units
         item.save(update_fields=["packed"])
         reverse_stock(report, user, "Korekta wysyłki: " + why)
@@ -648,9 +648,15 @@ def amend(order, user, data):
                 item=item,
                 instruction=item.instruction,
             )
-        touched.append(item.variant)
-    for variant in touched:
-        assign_available(variant, user)
+        touched.append(item)
+    # Quantity is already saved, so freed packs can be reserved again.
+    # Lock lots by primary key, then the shared pool.
+    for item in touched:
+        if item.custom_label:
+            for stock_id in item.lots.values_list("stock_id", flat=True).order_by("stock_id"):
+                assign_stock(StockItem.objects.select_for_update().get(pk=stock_id), user)
+        else:
+            assign_available(item.variant, user)
     if "priority" in data:
         if data["priority"] not in ["normal", "urgent"]:
             raise ValidationError("Niepoprawny priorytet.")
@@ -804,16 +810,7 @@ def ensure_stock_catalog():
             },
         )
     for variant in Variant.objects.filter(active=True):
-        StockItem.objects.update_or_create(
-            code=f"POP-{variant.sku}",
-            defaults={
-                "name": f"{variant.name} · {grams_label(variant.weight_g)} g",
-                "group": "popcorn",
-                "unit": "szt",
-                "position": int(variant.weight_g),
-                "variant": variant,
-            },
-        )
+        ensure_plain_stock(variant)
 
 
 def finished_category():
@@ -823,27 +820,55 @@ def finished_category():
     return category
 
 
-def sync_catalog_stock():
+def plain_stock_defaults(variant, category):
+    return {
+        "code": f"POP-{variant.sku}"[:40],
+        "name": f"{variant.name} · {grams_label(variant.weight_g)} g",
+        "group": "popcorn",
+        "unit": "szt",
+        "position": int(variant.weight_g),
+        "category": category,
+    }
+
+
+def ensure_plain_stock(variant):
+    """Create the shared pool for a catalog variant. Does not rewrite existing rows."""
     category = finished_category()
-    for variant in Variant.objects.select_related("product"):
+    stock, _ = StockItem.objects.get_or_create(
+        variant=variant,
+        artwork_sha256="",
+        artwork_unknown=False,
+        defaults=plain_stock_defaults(variant, category),
+    )
+    return stock
+
+
+def sync_catalog_stock(variant=None):
+    """Refresh plain catalog rows after a catalog change. Never touches logo lots."""
+    category = finished_category()
+    variants = (
+        [variant]
+        if variant is not None
+        else Variant.objects.select_related("product")
+    )
+    for row in variants:
         StockItem.objects.update_or_create(
-            variant=variant,
-            defaults={
-                "code": f"POP-{variant.sku}"[:40],
-                "name": f"{variant.name} · {grams_label(variant.weight_g)} g",
-                "group": "popcorn",
-                "unit": "szt",
-                "position": int(variant.weight_g),
-                "category": category,
-            },
+            variant=row,
+            artwork_sha256="",
+            artwork_unknown=False,
+            defaults=plain_stock_defaults(row, category),
         )
+
+
+def file_sha256(content):
+    return hashlib.sha256(content).hexdigest()
 
 
 def record_move(stock, quantity_delta, reserved_delta, user, reason, report=None):
     stock.quantity += Decimal(quantity_delta)
     stock.reserved += Decimal(reserved_delta)
-    if stock.reserved < 0:
-        raise ValidationError("Rezerwacja magazynu spadłaby poniżej zera.")
+    if stock.quantity < 0 or stock.reserved < 0:
+        raise ValidationError("Stan magazynu spadłby poniżej zera.")
     if stock.quantity < stock.reserved:
         raise ValidationError("Za mało towaru w magazynie.")
     stock.save(update_fields=["quantity", "reserved"])
@@ -859,8 +884,139 @@ def record_move(stock, quantity_delta, reserved_delta, user, reason, report=None
 
 
 def variant_stock_locked(variant):
-    sync_catalog_stock()
-    return StockItem.objects.select_for_update().get(variant=variant)
+    # Shared pool only. Logo lots are separate rows and must not be locked here.
+    stock = (
+        StockItem.objects.select_for_update()
+        .filter(variant=variant, artwork_sha256="", artwork_unknown=False)
+        .order_by("pk")
+        .first()
+    )
+    if stock is None:
+        ensure_plain_stock(variant)
+        stock = StockItem.objects.select_for_update().get(
+            variant=variant, artwork_sha256="", artwork_unknown=False
+        )
+    return stock
+
+
+def artwork_code(variant, version, digest):
+    base = f"L{variant.pk}V{version}{digest[:10]}".upper()
+    code = base[:40]
+    number = 2
+    while StockItem.objects.filter(code=code).exists():
+        suffix = f"-{number}"
+        code = f"{base[:40 - len(suffix)]}{suffix}"
+        number += 1
+    return code
+
+
+def artwork_stock_locked(variant, label):
+    if not label.content_sha256:
+        raise ValidationError("Etykieta nie ma identyfikatora grafiki.")
+    stock = (
+        StockItem.objects.select_for_update()
+        .filter(
+            variant=variant,
+            artwork_sha256=label.content_sha256,
+            artwork_version=label.version,
+            artwork_unknown=False,
+        )
+        .first()
+    )
+    if stock is not None:
+        return stock
+    category = finished_category()
+    stock, _ = StockItem.objects.get_or_create(
+        variant=variant,
+        artwork_sha256=label.content_sha256,
+        artwork_version=label.version,
+        artwork_unknown=False,
+        defaults={
+            "code": artwork_code(variant, label.version, label.content_sha256),
+            "name": (
+                f"{variant.name} · {grams_label(variant.weight_g)} g"
+                f" · etykieta v{label.version}"
+            )[:180],
+            "group": "popcorn",
+            "unit": "szt",
+            "position": int(variant.weight_g),
+            "category": category,
+            "label": label,
+        },
+    )
+    return StockItem.objects.select_for_update().get(pk=stock.pk)
+
+
+def remember_hold(item, stock, allocated=0, produced=0):
+    hold, _ = ItemLot.objects.get_or_create(item=item, stock=stock)
+    hold = ItemLot.objects.select_for_update().get(pk=hold.pk)
+    if allocated:
+        hold.allocated += allocated
+    if produced:
+        hold.produced += produced
+    hold.save(update_fields=["allocated", "produced"])
+    return hold
+
+
+def add_finished(item, units, user, report, reason):
+    if item.custom_label:
+        label = approved_label(item)
+        if label is None:
+            raise ValidationError("Zatwierdź etykietę przed produkcją.")
+        stock = artwork_stock_locked(item.variant, label)
+        record_move(stock, units, units, user, reason, report)
+        remember_hold(item, stock, produced=units)
+        return stock
+    return adjust_variant(item.variant, units, units, user, reason, report)
+
+
+def remove_finished(item, units, user, report, reason):
+    if not item.custom_label:
+        return adjust_variant(item.variant, -units, -units, user, reason, report)
+    holds = list(
+        ItemLot.objects.select_for_update().filter(item=item).order_by("id")
+    )
+    locked = lock_stocks([hold.stock_id for hold in holds])
+    left = units
+    for hold in holds:
+        ready = hold.allocated + hold.produced - hold.packed
+        take = min(left, ready)
+        if take <= 0:
+            continue
+        hold.packed += take
+        hold.save(update_fields=["packed"])
+        record_move(locked[hold.stock_id], -take, -take, user, reason, report)
+        left -= take
+    if left:
+        raise ValidationError("Za mało gotowych opakowań tego projektu etykiety.")
+
+
+def reverse_custom_holds(item, report):
+    if not item.custom_label:
+        return
+    for move in StockMove.objects.filter(report=report).order_by("id"):
+        hold = (
+            ItemLot.objects.select_for_update()
+            .filter(item=item, stock_id=move.item_id)
+            .first()
+        )
+        if hold is None:
+            raise ValidationError("Korekta nie znajduje partii etykiety.")
+        if move.delta > 0:
+            hold.produced -= int(move.delta)
+        if move.delta < 0:
+            hold.packed -= int(-move.delta)
+        if hold.produced < 0 or hold.allocated < 0 or hold.packed < 0:
+            raise ValidationError("Korekta rozjechałaby partię etykiety.")
+        hold.save(update_fields=["allocated", "produced", "packed"])
+
+
+def lock_stocks(stock_ids):
+    ids = sorted({pk for pk in stock_ids if pk})
+    return {
+        row.pk: row
+        for row in StockItem.objects.select_for_update().filter(pk__in=ids).order_by("pk")
+    }
 
 
 def adjust_variant(variant, quantity_delta, reserved_delta, user, reason, report=None):
@@ -869,23 +1025,49 @@ def adjust_variant(variant, quantity_delta, reserved_delta, user, reason, report
     return stock
 
 
-def allocate_item(item, user, order):
-    stock = variant_stock_locked(item.variant)
+def take_free(item, stock, user, order, track_lot):
     free = stock.quantity - stock.reserved
     take = min(to_produce(item), int(free)) if free > 0 else 0
     if take <= 0:
         return 0
     item.allocated += take
     item.save(update_fields=["allocated"])
+    if track_lot:
+        remember_hold(item, stock, allocated=take)
     record_move(stock, 0, take, user, f"Rezerwacja do {order.number}")
     return take
 
 
-def assign_available(variant, user):
-    stock = variant_stock_locked(variant)
-    order_ids = list(
+def allocate_custom(item, user, order):
+    label = approved_label(item)
+    if label is None or not label.content_sha256:
+        return 0
+    stock = (
+        StockItem.objects.select_for_update()
+        .filter(
+            variant=item.variant,
+            artwork_sha256=label.content_sha256,
+            artwork_version=label.version,
+            artwork_unknown=False,
+        )
+        .first()
+    )
+    if stock is None:
+        return 0
+    return take_free(item, stock, user, order, True)
+
+
+def allocate_item(item, user, order):
+    if item.custom_label:
+        return allocate_custom(item, user, order)
+    return take_free(item, variant_stock_locked(item.variant), user, order, False)
+
+
+def open_item_ids(variant, custom):
+    return list(
         Item.objects.filter(
             variant=variant,
+            custom_label=custom,
             order__confirmed_at__isnull=False,
             order__cancelled_at__isnull=True,
             order__issued_at__isnull=True,
@@ -893,18 +1075,23 @@ def assign_available(variant, user):
         .values_list("order_id", flat=True)
         .distinct()
     )
+
+
+def lock_open_orders(order_ids):
     if not order_ids:
-        return
-    locked_ids = list(
+        return []
+    return list(
         Order.objects.select_for_update(skip_locked=True)
         .filter(pk__in=order_ids)
         .order_by("id")
         .values_list("pk", flat=True)
     )
-    items = Item.objects.select_for_update().filter(
-        variant=variant, order_id__in=locked_ids
-    ).select_related("order").order_by("-order__priority", "order__due_at", "id")
+
+
+def give_free(stock, items, user, match):
     for item in items:
+        if match is not None and not match(item):
+            continue
         need = to_produce(item)
         free = stock.quantity - stock.reserved
         take = min(need, int(free)) if free > 0 else 0
@@ -914,11 +1101,58 @@ def assign_available(variant, user):
             continue
         item.allocated += take
         item.save(update_fields=["allocated"])
+        if item.custom_label:
+            remember_hold(item, stock, allocated=take)
         record_move(stock, 0, take, user, f"Rezerwacja do {item.order.number}")
         refresh_completion(item.order)
 
 
+def items_for_orders(variant, order_ids):
+    return Item.objects.select_for_update().filter(
+        variant=variant, order_id__in=order_ids
+    ).select_related("order").order_by("-order__priority", "order__due_at", "id")
+
+
+def assign_plain_locked(stock, user):
+    locked_ids = lock_open_orders(open_item_ids(stock.variant, False))
+    if not locked_ids:
+        return
+    give_free(stock, items_for_orders(stock.variant, locked_ids), user, None)
+
+
+def assign_matching_artwork(stock, user):
+    locked_ids = lock_open_orders(open_item_ids(stock.variant, True))
+    if not locked_ids:
+        return
+
+    def matches(item):
+        label = approved_label(item)
+        return bool(
+            label
+            and label.content_sha256 == stock.artwork_sha256
+            and label.version == stock.artwork_version
+        )
+
+    give_free(stock, items_for_orders(stock.variant, locked_ids), user, matches)
+
+
+def assign_stock(stock, user):
+    if not stock.variant_id or stock.artwork_unknown:
+        return
+    if stock.artwork_sha256:
+        assign_matching_artwork(stock, user)
+    else:
+        assign_plain_locked(stock, user)
+
+
+def assign_available(variant, user):
+    assign_plain_locked(variant_stock_locked(variant), user)
+
+
 def release_covered(item, units, user, why):
+    if item.custom_label:
+        release_custom_covered(item, units, user, why)
+        return
     stock = variant_stock_locked(item.variant)
     drop_produced = min(item.produced, units)
     item.produced -= drop_produced
@@ -931,17 +1165,88 @@ def release_covered(item, units, user, why):
         record_move(stock, 0, -released, user, why)
 
 
+def release_custom_covered(item, units, user, why):
+    drop_produced = min(item.produced, units)
+    drop_allocated = min(item.allocated, units - drop_produced)
+    item.produced -= drop_produced
+    item.allocated -= drop_allocated
+    item.save(update_fields=["produced", "allocated"])
+    holds = list(
+        ItemLot.objects.select_for_update().filter(item=item).order_by("-id")
+    )
+    locked = lock_stocks([hold.stock_id for hold in holds])
+    left_produced = drop_produced
+    left_allocated = drop_allocated
+    released = {}
+    for hold in holds:
+        if not left_produced:
+            break
+        room = hold.allocated + hold.produced - hold.packed
+        take = min(left_produced, hold.produced, room)
+        if take <= 0:
+            continue
+        hold.produced -= take
+        left_produced -= take
+        released[hold.stock_id] = released.get(hold.stock_id, 0) + take
+    for hold in holds:
+        if not left_allocated:
+            break
+        room = hold.allocated + hold.produced - hold.packed
+        take = min(left_allocated, hold.allocated, room)
+        if take <= 0:
+            continue
+        hold.allocated -= take
+        left_allocated -= take
+        released[hold.stock_id] = released.get(hold.stock_id, 0) + take
+    for hold in holds:
+        hold.save(update_fields=["produced", "allocated"])
+    if left_produced or left_allocated:
+        raise ValidationError(
+            "Nie można zdjąć rezerwacji etykiety — brak powiązania partii."
+        )
+    for stock_id in sorted(released):
+        record_move(locked[stock_id], 0, -released[stock_id], user, why)
+
+
 def release_unshipped(order, user, why):
-    variants = []
-    for item in order.items.select_related("variant").order_by("variant_id", "id"):
+    # Stock rows are locked by primary key inside each item before the next item.
+    stocks = []
+    for item in order.items.select_related("variant").order_by("id"):
         held = ready_to_ship(item)
         if held <= 0:
             continue
-        stock = variant_stock_locked(item.variant)
-        record_move(stock, 0, -held, user, why)
-        variants.append(item.variant)
-    for variant in variants:
-        assign_available(variant, user)
+        if item.custom_label:
+            stocks.extend(release_custom_unshipped(item, held, user, why))
+        else:
+            stock = variant_stock_locked(item.variant)
+            record_move(stock, 0, -held, user, why)
+            stocks.append(stock)
+    seen = set()
+    for stock in stocks:
+        if stock.pk in seen:
+            continue
+        seen.add(stock.pk)
+        assign_stock(stock, user)
+
+
+def release_custom_unshipped(item, held, user, why):
+    holds = list(ItemLot.objects.select_for_update().filter(item=item).order_by("id"))
+    locked = lock_stocks([hold.stock_id for hold in holds])
+    left = held
+    touched = []
+    for hold in holds:
+        unshipped = hold.allocated + hold.produced - hold.packed
+        take = min(left, unshipped)
+        if take <= 0:
+            continue
+        record_move(locked[hold.stock_id], 0, -take, user, why)
+        touched.append(locked[hold.stock_id])
+        left -= take
+    if left:
+        raise ValidationError(
+            "Nie można zwolnić zapasu etykiety — brak powiązania partii."
+        )
+    return touched
 
 
 def apply_stock_delta(stock, delta, user, reason, report=None):
@@ -969,14 +1274,12 @@ def reverse_stock(report, user, reason):
 
 
 def stock_rows():
-    sync_catalog_stock()
-    return StockItem.objects.select_related("category", "supplier").order_by(
+    return StockItem.objects.select_related("category", "supplier", "label").order_by(
         "category__position", "position", "name"
     )
 
 
 def category_rows():
-    sync_catalog_stock()
     return StockCategory.objects.order_by("position", "name")
 
 
@@ -1193,13 +1496,11 @@ def receive_stock(stock_id, quantity, user, why):
     else:
         number = decimal(quantity, "Ilość", True)
     record_move(stock, number, 0, user, "Przyjęcie towaru: " + why)
-    if stock.variant_id:
-        assign_available(stock.variant, user)
+    assign_stock(stock, user)
     return stock
 
 
 def set_stock_quantity(item_id, quantity, user, why):
-    sync_catalog_stock()
     stock = StockItem.objects.select_for_update().get(pk=item_id)
     if stock.unit == "szt":
         number = decimal(quantity, "Liczba sztuk")
@@ -1216,6 +1517,6 @@ def set_stock_quantity(item_id, quantity, user, why):
         )
     increased = quantity > stock.quantity
     record_move(stock, quantity - stock.quantity, 0, user, why)
-    if increased and stock.variant_id:
-        assign_available(stock.variant, user)
+    if increased:
+        assign_stock(stock, user)
     return stock
