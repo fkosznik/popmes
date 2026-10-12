@@ -376,6 +376,8 @@ class FlowTests(TestCase):
         self.variant.save()
         payload = {
             "customer_id": self.customer.pk,
+            "delivery": "courier",
+            "delivery_address_id": "a1",
             "due_at": timezone.now().isoformat(),
             "confirm": True,
             "items": [{"variant_id": self.variant.pk, "quantity": 10}],
@@ -695,6 +697,85 @@ class FlowTests(TestCase):
             expected=403,
         )
 
+
+    def test_full_stock_coverage_needs_no_production(self):
+        from .models import StockItem
+        s.sync_catalog_stock()
+        stock = StockItem.objects.get(variant=self.variant)
+        self.post(f"stock/{stock.pk}/", {"quantity": "10", "reason": "Initial"})
+        order = self.order(10)
+        self.assertEqual(order.items.get().allocated, 10)
+        self.assertFalse(order.tasks.filter(kind="production").exists())
+        self.post(f"orders/{order.pk}/ship/")
+        stock.refresh_from_db()
+        self.assertEqual((stock.quantity, stock.reserved), (0, 0))
+
+    def test_failed_recipe_report_rolls_back_all_stock_and_can_retry(self):
+        from decimal import Decimal
+        from .models import StockItem, StockMove
+        s.sync_catalog_stock()
+        sugar = StockItem.objects.get(code="CUKIER")
+        self.post(f"stock/{sugar.pk}/", {"quantity": "0.1", "reason": "Initial"})
+        self.post("recipes/", {"variant_id": self.variant.pk,
+                  "lines": [{"stock_id": sugar.pk, "quantity": "0.020"}]})
+        order = self.order(10)
+        task, _ = self.tasks(order)
+        moves = StockMove.objects.count()
+        key = uuid.uuid4()
+        self.post(f"tasks/{task.pk}/report/", {"units": 10}, key, expected=400)
+        self.assertFalse(Report.objects.filter(task=task).exists())
+        self.assertEqual(order.items.get().produced, 0)
+        self.assertEqual(StockMove.objects.count(), moves)
+        stock = StockItem.objects.get(variant=self.variant)
+        self.assertEqual((stock.quantity, stock.reserved), (0, 0))
+        self.assertEqual(StockItem.objects.get(pk=sugar.pk).quantity, Decimal("0.100"))
+        self.post("stock/receipt/", {"stock_id": sugar.pk, "quantity": "0.1", "reason": "Delivery"})
+        self.post(f"tasks/{task.pk}/report/", {"units": 10}, key)
+        self.post(f"tasks/{task.pk}/report/", {"units": 10}, key)
+        self.assertEqual(Report.objects.filter(task=task).count(), 1)
+        self.assertEqual(StockItem.objects.get(pk=sugar.pk).quantity, 0)
+
+    def test_repeated_shipment_does_not_remove_stock_twice(self):
+        from .models import StockItem
+        order = self.order(10)
+        task, _ = self.tasks(order)
+        self.post(f"tasks/{task.pk}/report/", {"units": 10})
+        key = uuid.uuid4()
+        first = self.post(f"orders/{order.pk}/ship/", key=key)
+        second = self.post(f"orders/{order.pk}/ship/", key=key)
+        self.assertEqual(first.data, second.data)
+        self.assertEqual(order.shipments.count(), 1)
+        stock = StockItem.objects.get(variant=self.variant)
+        self.assertEqual((stock.quantity, stock.reserved), (0, 0))
+
+    def test_reserved_stock_cannot_be_removed_by_manual_adjustment(self):
+        from .models import StockItem
+        s.sync_catalog_stock()
+        stock = StockItem.objects.get(variant=self.variant)
+        self.post(f"stock/{stock.pk}/", {"quantity": "10", "reason": "Initial"})
+        self.order(8)
+        self.post(f"stock/{stock.pk}/", {"quantity": "7", "reason": "Count"}, expected=400)
+        stock.refresh_from_db()
+        self.assertEqual((stock.quantity, stock.reserved), (10, 8))
+
+    def test_cancelled_custom_label_stock_is_not_allocated_to_another_customer(self):
+        # Regression: finished packs carrying customer A's artwork must not
+        # satisfy customer B's order merely because the generic SKU matches.
+        first = self.order(10, custom=True)
+        production, _ = self.tasks(first)
+        label_id = self.upload(production.item)
+        self.post(f"labels/{label_id}/approve/")
+        self.post(f"tasks/{production.pk}/report/", {"units": 10})
+        self.post(f"orders/{first.pk}/cancel/", {"reason": "Customer cancelled"})
+        self.customer = Customer.objects.create(
+            name="Different customer",
+            delivery_addresses=[{"id": "a1", "name": "Office", "address": "Other street 2"}],
+        )
+        second = self.order(5, custom=True)
+        self.assertEqual(second.items.get().allocated, 0,
+                         "Stock bearing another customer's logo must not be allocated")
+        self.assertTrue(second.tasks.filter(kind="production").exists())
+
     def test_stock_detail_edits_name_supplier_and_unit(self):
         from decimal import Decimal
         from .models import StockCategory, StockItem, Supplier
@@ -916,7 +997,7 @@ class ConcurrencyTests(TransactionTestCase):
         )
         customer = Customer.objects.create(name="Customer")
         order = Order.objects.create(
-            customer=customer, created_by=a, due_at=timezone.now()
+            customer=customer, created_by=a, due_at=timezone.now(), delivery="pickup"
         )
         item = Item(order=order, variant=variant, quantity=10)
         s.snapshot_item(item, variant)
