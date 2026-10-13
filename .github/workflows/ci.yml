@@ -30,12 +30,14 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Typecheck, npm audit and secret scan
+      - name: Typecheck and npm audit
+        working-directory: frontend
         run: |
-          npm ci --prefix frontend
-          npx --prefix frontend tsc -b --pretty false
-          npm audit --prefix frontend --audit-level=high
-          bash scripts/scan-secrets.sh
+          npm ci
+          npx tsc -b --pretty false
+          npm audit --audit-level=high
+      - name: Secret scan
+        run: bash scripts/scan-secrets.sh
   application:
     runs-on: ubuntu-latest
     timeout-minutes: 35
