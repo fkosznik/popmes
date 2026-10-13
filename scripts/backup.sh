@@ -31,6 +31,12 @@ resume_backend() {
 }
 cleanup() {
   status=$?
+  if [ "$status" -ne 0 ] && [ -n "${backup_root:-}" ] && [ -f "$backup_root/LOCAL_STATUS" ]; then
+    local_state="$(sed -n '1p' "$backup_root/LOCAL_STATUS" 2>/dev/null || true)"
+    if [ "$local_state" = "running" ]; then
+      mark_local failed || true
+    fi
+  fi
   resume_backend
   ops_unlock
   exit "$status"
@@ -49,31 +55,44 @@ if ! mkdir "$backup_target" 2>/dev/null; then
   mkdir "$backup_target"
 fi
 chmod 700 "$backup_target"
+mark_local() {
+  local when
+  when="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  write_atomic "$backup_root/LOCAL_STATUS" "${1}"$'\n'"${when}"
+}
 mark_offsite() {
-  printf '%s\n' "$1" > "$backup_root/OFFSITE_STATUS"
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$backup_root/OFFSITE_ATTEMPT"
+  local when
+  when="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  write_atomic "$backup_root/OFFSITE_STATUS" "$1"
+  write_atomic "$backup_root/OFFSITE_ATTEMPT" "$when"
+}
+fail_local() {
+  mark_local "$1"
+  echo "Local backup failed (${1}). The previous successful copy was kept." >&2
+  exit 1
 }
 fail_offsite() {
   mark_offsite "$1"
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$backup_root/LAST_FAILURE"
+  write_atomic "$backup_root/LAST_FAILURE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "Off-site backup failed ($1). The previous successful off-site copy was kept." >&2
   exit 1
 }
+mark_local running
 docker compose "${COMPOSE_ARGS[@]}" stop backend
 if ! docker compose "${COMPOSE_ARGS[@]}" exec -T database sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$backup_target/database.dump"; then
   rm -rf "$backup_target"
   echo "pg_dump failed. Backend state: stopped=$([ "${POPMES_KEEP_BACKEND_STOPPED:-0}" = 1 ] && echo yes || echo no)." >&2
-  exit 1
+  fail_local dump_failed
 fi
 if ! docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps -T --user root --entrypoint tar backend -C /app/media -czf - . > "$backup_target/media.tar.gz"; then
   rm -rf "$backup_target"
   echo "Media archive failed." >&2
-  exit 1
+  fail_local media_failed
 fi
 if ! (cd "$backup_target" && sha256sum database.dump media.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS >/dev/null); then
   rm -rf "$backup_target"
   echo "Checksum failed. The incomplete directory was removed." >&2
-  exit 1
+  fail_local checksum_failed
 fi
 old_dirs=()
 while IFS= read -r dir; do
@@ -89,7 +108,8 @@ if [ "${#old_dirs[@]}" -ge "$keep" ]; then
     index=$((index + 1))
   done
 fi
-date -u +%Y-%m-%dT%H:%M:%SZ > "$backup_root/LAST_SUCCESS"
+write_atomic "$backup_root/LAST_SUCCESS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+mark_local ok
 printf 'Local backup created: %s\n' "$backup_target"
 resume_backend
 offsite="${RESTIC_REPOSITORY:-}"
@@ -119,6 +139,6 @@ if ! restic forget --tag popmes --prune \
   --keep-last 1; then
   fail_offsite "prune_failed"
 fi
-date -u +%Y-%m-%dT%H:%M:%SZ > "$backup_root/OFFSITE_SUCCESS"
+write_atomic "$backup_root/OFFSITE_SUCCESS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mark_offsite "ok"
 echo "Off-site restic copy finished. The password file must stay outside that repository."

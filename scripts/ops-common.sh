@@ -26,6 +26,26 @@ health_url() {
   printf 'http://127.0.0.1:%s/api/health/\n' "${APP_PORT:-8080}"
 }
 
+# Replace a status file in one step so a reader never sees a partial write.
+write_atomic() {
+  local dest="$1" value="$2" dir tmp
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "${dir}/.status.XXXXXX")"
+  printf '%s\n' "$value" > "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
+epoch_of() {
+  local value="$1" parsed
+  parsed="$(date -u -d "$value" +%s 2>/dev/null || true)"
+  if [ -n "$parsed" ]; then
+    printf '%s\n' "$parsed"
+    return
+  fi
+  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s
+}
+
 ops_lock() {
   OPS_LOCK="${PWD}/.popmes-ops.lock"
   if [ "${POPMES_LOCK_HELD:-0}" = "1" ]; then

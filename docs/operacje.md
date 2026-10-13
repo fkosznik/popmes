@@ -48,7 +48,7 @@ Sprawdzenie SQL ról wykonano na tymczasowej bazie `popmes_rolecheck`, którą p
 
 ## Kopie
 
-`bash scripts/backup.sh` zatrzymuje backend, zapisuje spójny zrzut bazy i archiwum grafik, liczy SHA256 i uruchamia backend z powrotem. Zostawia `backups/LAST_SUCCESS`. Lokalnie trzyma 14 katalogów (`BACKUP_KEEP`).
+`bash scripts/backup.sh` zatrzymuje backend, zapisuje spójny zrzut bazy i archiwum grafik, liczy SHA256 i uruchamia backend z powrotem. `backups/LAST_SUCCESS` to czas ostatniej udanej kopii lokalnej i nie zmienia się, gdy kolejna próba padnie. `backups/LOCAL_STATUS` opisuje ostatnią próbę: `running`, `ok`, `dump_failed`, `media_failed`, `checksum_failed` albo `failed`, razem z czasem tej próby. Pliki statusu są podmieniane w całości. Lokalnie skrypt trzyma 14 katalogów (`BACKUP_KEEP`). `BACKUP_RUNNING_MAX_MINUTES` (domyślnie 120) odróżnia trwającą kopię od takiej, która utknęła.
 
 Kopia poza maszynę używa [restic](https://restic.net/). Własnego szyfrowania nie ma. W `.env`:
 
@@ -87,15 +87,15 @@ bash scripts/update.sh <tag-albo-commit> --verified
 
 1. Przerywa, gdy drzewo ma lokalne zmiany, brakuje `.env` albo `DEBUG=1`.
 2. Blokuje drugą aktualizację plikiem `.update.lock`.
-3. Zapisuje obecną i docelową rewizję w `updates/history.log`.
-4. Buduje obrazy zanim zatrzyma backend.
+3. Zapisuje obecną i docelową rewizję w `updates/history.log`. Osobno, zanim cokolwiek zbuduje albo zatrzyma, zapisuje identyfikatory obrazów faktycznie używanych przez kontenery w nowym katalogu `updates/<czas>`. Tag `latest` i SHA checkoutu nie są tym identyfikatorem. Brak jednego kontenera albo brak odczytu obrazu kończy aktualizację przed zatrzymaniem usług.
+4. Buduje obrazy. Przy błędzie builda z powrotem oznaczane są obrazy zapisane w tym katalogu, nie obraz spod tagu `latest`.
 5. Zatrzymuje backend, robi kopię, dopiero potem migracje.
 6. Uruchamia kontenery i czeka na healthcheck oraz `/api/health/`.
-7. Przy błędzie zostawia bazę bez automatycznego odtworzenia i wypisuje komendę powrotu kodu.
+7. Przy błędzie zostawia bazę bez automatycznego odtworzenia. Powrót to `docker tag` zapisanych identyfikatorów i `docker compose up -d --no-build`. Nie cofa migracji. Ponowna próba dostaje własny katalog i nie nadpisuje poprzedniego zapisu.
 
 Wariant z Caddy: `USE_HTTPS=1` w `.env`. Skrypt dokłada `compose.https.yaml`. `.env`, wolumen bazy i media zostają.
 
-Powrót kodu to `git checkout` poprzedniej rewizji i `docker compose up -d --build`. To nie cofa migracji. Odtworzenie bazy jest osobną decyzją i usuwa zapisy zrobione po kopii.
+Powrót do poprzednich obrazów nie buduje ich od nowa i nie odtwarza bazy. Odtworzenie bazy jest osobną decyzją i usuwa zapisy zrobione po kopii.
 
 ## HTTPS i logowanie
 
@@ -121,7 +121,7 @@ Usuwa wygasłe sesje, liczniki logowania starsze niż jeden dzień i klucze idem
 
 ## Monitoring
 
-Logi kontenerów obracają się przez sterownik `json-file` (10 MB, 5 plików). `scripts/monitor.sh` sprawdza `/api/health/`, zajętość dysku i wiek `LAST_SUCCESS`. Przy błędzie i ustawionym `ALERT_WEBHOOK_URL` wysyła krótki tekst, bez haseł i danych klientów. Nie dodano osobnego systemu monitoringu.
+Logi kontenerów obracają się przez sterownik `json-file` (10 MB, 5 plików). `scripts/monitor.sh` sprawdza adres aplikacji, zajętość dysku, wiek `LAST_SUCCESS` oraz ostatnią próbę lokalną i zewnętrzną osobno. Adres bierze z `MONITOR_URL`, a gdy go nie ma, z tej samej funkcji co aktualizacja: `HEALTHCHECK_URL`, potem HTTPS z `DOMAIN`, potem HTTP na `APP_PORT`. Nie wyłącza sprawdzania certyfikatu TLS. Nieudana próba lokalna podnosi alarm także wtedy, gdy poprzednia kopia jest świeża. Próba `running` młodsza niż `BACKUP_RUNNING_MAX_MINUTES` alarmu nie podnosi. Przy błędzie i ustawionym `ALERT_WEBHOOK_URL` wysyła krótki tekst, bez haseł i danych klientów. Nie dodano osobnego systemu monitoringu.
 
 ## Ochrona gałęzi main
 

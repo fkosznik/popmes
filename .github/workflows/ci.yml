@@ -1,10 +1,10 @@
 name: POPMES checks
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 concurrency:
+  # github.ref keeps a push on one branch from cancelling another branch.
   group: popmes-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 permissions:
