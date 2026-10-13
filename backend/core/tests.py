@@ -894,6 +894,57 @@ class FlowTests(TestCase):
         ]
         self.assertEqual(writes, [])
 
+    def test_order_page_does_not_shrink_the_totals(self):
+        self.order(5)
+        self.order(6)
+        self.order(7)
+        response = self.client.get("/api/state/?orders_scope=page&orders_limit=1")
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(len(body["orders"]), 1)
+        self.assertGreaterEqual(body["summary"]["orders"], 3)
+        self.assertGreaterEqual(body["summary"]["active"], 3)
+        self.assertGreaterEqual(body["orders_page"]["count"], 3)
+        hidden = self.client.get("/api/state/?orders_scope=none")
+        self.assertEqual(hidden.json()["orders"], [])
+        self.assertGreaterEqual(hidden.json()["summary"]["orders"], 3)
+
+    def test_login_attempts_are_limited_for_every_worker(self):
+        client = APIClient()
+        for _ in range(10):
+            response = client.post(
+                "/api/auth/login/",
+                {"username": "admin", "password": "wrong-password"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 400, response.content)
+        blocked = client.post(
+            "/api/auth/login/",
+            {"username": "admin", "password": "wrong-password"},
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, 429, blocked.content)
+
+    def test_technical_cleanup_keeps_orders_and_stock_history(self):
+        from django.core.management import call_command
+        from django.utils import timezone
+        from datetime import timedelta
+        from .models import LoginAttempt, RequestReceipt, StockMove
+
+        order = self.order(4)
+        production, _ = self.tasks(order)
+        self.post(f"tasks/{production.pk}/report/", {"units": 2})
+        RequestReceipt.objects.update(created_at=timezone.now() - timedelta(days=8))
+        LoginAttempt.objects.create(
+            ident="abc", created_at=timezone.now() - timedelta(days=2)
+        )
+        moves = StockMove.objects.count()
+        call_command("purge_technical")
+        self.assertEqual(Order.objects.filter(pk=order.pk).count(), 1)
+        self.assertEqual(StockMove.objects.count(), moves)
+        self.assertEqual(RequestReceipt.objects.count(), 0)
+        self.assertEqual(LoginAttempt.objects.count(), 0)
+
 
     # Scenario references (independent POPMES implementation):
     # ERPNext: stock/doctype/stock_reservation_entry/test_stock_reservation_entry.py

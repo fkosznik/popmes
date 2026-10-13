@@ -2,6 +2,7 @@
 
 import hashlib
 from decimal import Decimal, InvalidOperation
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Max, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError, PermissionDenied
@@ -158,7 +159,10 @@ def available(order, product_id):
 
 
 def latest_label(item):
-    return item.labels.order_by("-version").first()
+    labels = list(item.labels.all())
+    if not labels:
+        return None
+    return max(labels, key=lambda label: label.version)
 
 
 def label_ready(item):
@@ -1520,3 +1524,153 @@ def set_stock_quantity(item_id, quantity, user, why):
     if increased:
         assign_stock(stock, user)
     return stock
+
+
+STATUS_LABELS = {
+    "pl": {
+        "draft": "Szkic",
+        "producing": "W trakcie produkcji",
+        "awaiting_shipment": "Czeka na wysyłkę",
+        "completed": "Zrealizowane",
+        "issued": "Wydane",
+        "cancelled": "Anulowane",
+    },
+    "en": {
+        "draft": "Draft",
+        "producing": "In production",
+        "awaiting_shipment": "Ready to ship",
+        "completed": "Completed",
+        "issued": "Issued",
+        "cancelled": "Cancelled",
+    },
+}
+
+
+def visible_orders(user):
+    order_q, _space = workspace_filter(user)
+    return (
+        Order.objects.select_related("customer")
+        .prefetch_related("items__labels", "tasks")
+        .filter(order_q)
+        .order_by("-id")
+    )
+
+
+def summarize_orders(orders):
+    active = overdue = production_remaining = packing_remaining = 0
+    now = timezone.now()
+    for order in orders:
+        current = status(order)
+        if current in ("draft", "issued", "cancelled", "completed"):
+            continue
+        active += 1
+        if order.due_at and order.due_at < now:
+            overdue += 1
+        for item in order.items.all():
+            production_remaining += to_produce(item)
+            packing_remaining += max(0, item.quantity - item.packed)
+    return {
+        "orders": len(orders),
+        "active": active,
+        "overdue": overdue,
+        "production_remaining": production_remaining,
+        "packing_remaining": packing_remaining,
+    }
+
+
+def customer_label(order):
+    if order.customer_id and order.customer.name:
+        return order.customer.name
+    return (order.customer_snapshot or {}).get("name") or "Bez klienta"
+
+
+def order_matches(order, text, status_filter):
+    current = status(order)
+    if status_filter == "late":
+        if current in ("draft", "issued", "cancelled", "completed"):
+            return False
+        if not order.due_at or order.due_at >= timezone.now():
+            return False
+    elif status_filter not in ("", "all") and current != status_filter:
+        return False
+    if not text:
+        return True
+    blob = " ".join(
+        [order.number, customer_label(order), *(item.name for item in order.items.all())]
+    ).casefold()
+    return text.casefold() in blob
+
+
+def sort_orders(orders, key, direction, lang):
+    labels = STATUS_LABELS.get(lang, STATUS_LABELS["pl"])
+    desc = direction == "desc"
+
+    def value(order):
+        if key == "due":
+            if order.due_at is None:
+                return (1, 0)
+            stamp = order.due_at.timestamp()
+            return (0, -stamp if desc else stamp)
+        if key == "progress":
+            units = sum(item.quantity for item in order.items.all())
+            packed = sum(item.packed for item in order.items.all())
+            ratio = packed / units if units else 0
+            return (ratio, packed)
+        if key == "status":
+            current = status(order)
+            if order.hold_reason:
+                return "wstrzymane" if lang != "en" else "on hold"
+            return labels.get(current, current).casefold()
+        if key == "flavor":
+            return " · ".join(
+                f"{item.product_name} {grams_label(item.weight_g)} g"
+                for item in order.items.all()
+            ).casefold()
+        return customer_label(order).casefold()
+
+    rows = sorted(orders, key=value)
+    if desc and key != "due":
+        rows.reverse()
+    return rows
+
+
+def select_orders(user, params):
+    """Page of orders plus totals for the whole workspace, not the page."""
+    rows = list(visible_orders(user))
+    summary = summarize_orders(rows)
+    scope = params.get("orders_scope") or "page"
+    if scope == "none":
+        return [], summary, {"limit": 0, "offset": 0, "count": summary["orders"]}
+    if scope == "upcoming":
+        open_rows = [
+            order
+            for order in rows
+            if status(order) not in ("draft", "issued", "cancelled", "completed")
+        ]
+        open_rows.sort(key=lambda order: (order.due_at is None, order.due_at or timezone.now()))
+        return open_rows[:6], summary, {
+            "limit": 6,
+            "offset": 0,
+            "count": len(open_rows),
+        }
+    text = str(params.get("orders_q") or "").strip()
+    status_filter = str(params.get("orders_status") or "all")
+    matched = [order for order in rows if order_matches(order, text, status_filter)]
+    key = params.get("orders_sort") or ""
+    direction = "desc" if params.get("orders_dir") == "desc" else "asc"
+    try:
+        lang = "en" if user.profile.language == "en" else "pl"
+    except ObjectDoesNotExist:
+        lang = "pl"
+    if key in ("customer", "flavor", "due", "progress", "status"):
+        matched = sort_orders(matched, key, direction, lang)
+    try:
+        limit = min(100, max(1, int(params.get("orders_limit") or 50)))
+        offset = max(0, int(params.get("orders_offset") or 0))
+    except (TypeError, ValueError):
+        limit, offset = 50, 0
+    return matched[offset:offset + limit], summary, {
+        "limit": limit,
+        "offset": offset,
+        "count": len(matched),
+    }

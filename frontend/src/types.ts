@@ -260,6 +260,14 @@ export type State = {
   variants: Variant[];
   customers: Customer[];
   orders: Order[];
+  summary: {
+    orders: number;
+    active: number;
+    overdue: number;
+    production_remaining: number;
+    packing_remaining: number;
+  };
+  orders_page: { limit: number; offset: number; count: number };
   tasks: Task[];
   batches: Batch[];
   stock: StockItem[];

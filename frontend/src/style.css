@@ -2049,6 +2049,14 @@ footer span:last-child {
     font-size: 12px;
   }
 }
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 html[data-mode="dark"] {
   color-scheme: dark;
   --ink: #f2f0f6;

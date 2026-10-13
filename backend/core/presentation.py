@@ -5,7 +5,6 @@ from .services import (
     status,
     roles,
     available,
-    latest_label,
     blockers,
     task_status,
     deficits,
@@ -85,7 +84,14 @@ def batch_data(batch):
     }
 
 
+def ordered_labels(item):
+    labels = list(item.labels.all())
+    labels.sort(key=lambda label: label.version, reverse=True)
+    return labels
+
+
 def item_data(item):
+    labels = ordered_labels(item)
     return {
         "id": item.pk,
         "variant_id": item.variant_id,
@@ -100,8 +106,8 @@ def item_data(item):
         "packaging": item.packaging,
         "instruction": item.instruction,
         "custom_label": item.custom_label,
-        "label": label_data(latest_label(item)),
-        "labels": [label_data(l) for l in item.labels.order_by("-version")],
+        "label": label_data(labels[0] if labels else None),
+        "labels": [label_data(label) for label in labels],
     }
 
 
