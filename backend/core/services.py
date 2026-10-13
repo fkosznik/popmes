@@ -410,11 +410,12 @@ def shipping_report(task, user, data):
             "Za mało gotowych opakowań. Najpierw dokończ produkcję albo użyj stanu z magazynu."
         )
     note = str(data.get("note", ""))[:4000]
+    ensure_shippable_artwork(item, units)
     report = Report.objects.create(
         task=task,
         user=user,
         units=units,
-        label=approved_label(item),
+        label=None,
         note=note,
     )
     shipment = Shipment.objects.create(
@@ -425,7 +426,11 @@ def shipping_report(task, user, data):
     )
     item.packed += units
     item.save(update_fields=["packed"])
-    remove_finished(item, units, user, report, "Wysłano")
+    consumed = remove_finished(item, units, user, report, "Wysłano")
+    label_id = label_for_consumed(consumed)
+    if label_id:
+        report.label_id = label_id
+        report.save(update_fields=["label"])
     task.started_at = task.started_at or timezone.now()
     task.save(update_fields=["started_at"])
     refresh_completion(order)
@@ -453,6 +458,7 @@ def ship_order(order, user):
         left = item.quantity - item.packed
         if left <= 0:
             continue
+        ensure_shippable_artwork(item, left)
         if ready_to_ship(item) < left:
             raise ValidationError(
                 "Czeka na produkcję. Oznacz wysyłkę, gdy całe zamówienie jest gotowe."
@@ -494,7 +500,7 @@ def ship_order(order, user):
             task=task,
             user=user,
             units=units,
-            label=approved_label(item),
+            label=None,
             note=note,
         )
         ShipmentLine.objects.create(
@@ -502,7 +508,11 @@ def ship_order(order, user):
         )
         item.packed += units
         item.save(update_fields=["packed"])
-        remove_finished(item, units, user, report, "Wysłano")
+        consumed = remove_finished(item, units, user, report, "Wysłano")
+        label_id = label_for_consumed(consumed)
+        if label_id:
+            report.label_id = label_id
+            report.save(update_fields=["label"])
         task.started_at = task.started_at or timezone.now()
         task.save(update_fields=["started_at"])
         total += units
@@ -974,25 +984,145 @@ def add_finished(item, units, user, report, reason):
     return adjust_variant(item.variant, units, units, user, reason, report)
 
 
+def hold_matches_label(hold, label):
+    stock = hold.stock
+    if stock.artwork_unknown or label is None or not label.content_sha256:
+        return False
+    return (
+        stock.artwork_sha256 == label.content_sha256
+        and stock.artwork_version == label.version
+    )
+
+
+def conflicting_holds(item, label):
+    holds = ItemLot.objects.select_related("stock").filter(item=item).order_by("id")
+    return [
+        hold
+        for hold in holds
+        if hold.allocated + hold.produced - hold.packed > 0
+        and not hold_matches_label(hold, label)
+    ]
+
+
+def matching_ready(item, label):
+    total = 0
+    for hold in ItemLot.objects.select_related("stock").filter(item=item):
+        if hold_matches_label(hold, label):
+            total += hold.allocated + hold.produced - hold.packed
+    return total
+
+
+def ensure_shippable_artwork(item, units):
+    if not item.custom_label:
+        return
+    label = latest_label(item)
+    if label is None or not label.approved_at:
+        raise ValidationError(
+            "Zatwierdź aktualną etykietę. Nie wyślę opakowań innej grafiki."
+        )
+    if matching_ready(item, label) < units:
+        if ready_to_ship(item) >= units:
+            raise ValidationError(
+                "Zarezerwowane opakowania mają inną grafikę niż zatwierdzona etykieta. "
+                "Rozlicz wcześniejszy zapas, zanim wyślesz."
+            )
+        raise ValidationError("Za mało gotowych opakowań tej grafiki.")
+
+
+def settle_previous_artwork(item, label, user):
+    """Return unshipped packs of another graphic to their own lot.
+
+    Quantity stays on that lot. This order stops claiming them. Reports and
+    stock history stay.
+    """
+    conflict_ids = [hold.pk for hold in conflicting_holds(item, label)]
+    if not conflict_ids:
+        return
+    holds = list(
+        ItemLot.objects.select_for_update()
+        .select_related("stock")
+        .filter(pk__in=conflict_ids)
+        .order_by("id")
+    )
+    locked = lock_stocks([hold.stock_id for hold in holds])
+    drop_allocated = 0
+    drop_produced = 0
+    for hold in holds:
+        unshipped = hold.allocated + hold.produced - hold.packed
+        if unshipped <= 0:
+            continue
+        record_move(
+            locked[hold.stock_id],
+            0,
+            -unshipped,
+            user,
+            "Rozliczenie wcześniejszej grafiki",
+        )
+        take_produced = min(hold.produced, unshipped)
+        take_allocated = unshipped - take_produced
+        if take_allocated > hold.allocated:
+            raise ValidationError("Nie można rozliczyć wcześniejszej grafiki.")
+        hold.produced -= take_produced
+        hold.allocated -= take_allocated
+        hold.save(update_fields=["allocated", "produced"])
+        drop_produced += take_produced
+        drop_allocated += take_allocated
+    item.produced -= drop_produced
+    item.allocated -= drop_allocated
+    if item.produced < 0 or item.allocated < 0:
+        raise ValidationError("Nie można rozliczyć wcześniejszej grafiki.")
+    item.save(update_fields=["produced", "allocated"])
+    if to_produce(item) > 0 and not item.tasks.filter(kind="production").exists():
+        Task.objects.create(
+            order=item.order,
+            kind="production",
+            product=item.product,
+            product_name=item.name,
+            item=item,
+            instruction=item.instruction,
+        )
+
+
+def label_for_consumed(consumed):
+    labels = []
+    for stock, _units in consumed:
+        if stock.label_id and stock.label_id not in labels:
+            labels.append(stock.label_id)
+    if len(labels) == 1:
+        return labels[0]
+    return None
+
+
 def remove_finished(item, units, user, report, reason):
     if not item.custom_label:
-        return adjust_variant(item.variant, -units, -units, user, reason, report)
+        stock = adjust_variant(item.variant, -units, -units, user, reason, report)
+        return [(stock, units)]
+    ensure_shippable_artwork(item, units)
+    label = latest_label(item)
     holds = list(
         ItemLot.objects.select_for_update().filter(item=item).order_by("id")
     )
     locked = lock_stocks([hold.stock_id for hold in holds])
-    left = units
     for hold in holds:
+        hold.stock = locked[hold.stock_id]
+    left = units
+    consumed = []
+    for hold in holds:
+        if not hold_matches_label(hold, label):
+            continue
         ready = hold.allocated + hold.produced - hold.packed
         take = min(left, ready)
         if take <= 0:
             continue
         hold.packed += take
         hold.save(update_fields=["packed"])
-        record_move(locked[hold.stock_id], -take, -take, user, reason, report)
+        stock = locked[hold.stock_id]
+        record_move(stock, -take, -take, user, reason, report)
+        consumed.append((stock, take))
         left -= take
     if left:
         raise ValidationError("Za mało gotowych opakowań tego projektu etykiety.")
+    return consumed
 
 
 def reverse_custom_holds(item, report):
@@ -1006,6 +1136,11 @@ def reverse_custom_holds(item, report):
         )
         if hold is None:
             raise ValidationError("Korekta nie znajduje partii etykiety.")
+        if move.delta > 0 and hold.produced < int(move.delta):
+            raise ValidationError(
+                "Ta produkcja została rozliczona przy zmianie grafiki. "
+                "Korekta nie cofnie zwolnionego zapasu."
+            )
         if move.delta > 0:
             hold.produced -= int(move.delta)
         if move.delta < 0:

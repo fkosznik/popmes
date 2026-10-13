@@ -3069,7 +3069,21 @@ export default function App() {
                     !["cancelled", "issued"].includes(detail.status) && (
                       <button
                         disabled={busy}
-                        onClick={() => action(`labels/${i.label!.id}/approve/`)}
+                        onClick={() => {
+                          const uncovered = i.allocated + i.produced - i.packed;
+                          const settle =
+                            i.label!.version > 1 &&
+                            uncovered > 0 &&
+                            window.confirm(
+                              "Zamówienie ma już opakowania poprzedniej grafiki. Rozliczyć je do magazynu i zatwierdzić nową etykietę? Wcześniejsze opakowania zostaną w magazynie przy swojej grafice.",
+                            );
+                          if (i.label!.version > 1 && uncovered > 0 && !settle)
+                            return;
+                          action(
+                            `labels/${i.label!.id}/approve/`,
+                            settle ? { settle_previous: true } : {},
+                          );
+                        }}
                       >
                         Zatwierdź
                       </button>

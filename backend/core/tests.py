@@ -823,6 +823,43 @@ class FlowTests(TestCase):
         self.post(f"labels/{self.upload(item, 'blue')}/approve/")
         self.assertEqual(blue_v2.items.get().allocated, 4)
 
+    def test_new_artwork_does_not_ship_previously_reserved_packs(self):
+        from .models import Report, StockItem
+
+        first = self.order(10, custom=True)
+        production, _ = self.tasks(first)
+        self.post(f"labels/{self.upload(production.item, 'red')}/approve/")
+        self.post(f"tasks/{production.pk}/report/", {"units": 10})
+        self.post(f"orders/{first.pk}/cancel/", {"reason": "Customer cancelled"})
+        second = self.order(5, custom=True)
+        red = self.upload(second.items.get(), "red")
+        self.post(f"labels/{red}/approve/")
+        self.assertEqual(second.items.get().allocated, 5)
+        blue = self.upload(second.items.get(), "blue")
+        blocked = self.post(f"labels/{blue}/approve/", expected=400)
+        self.assertIn("wcześniejsz", blocked.content.decode().lower())
+        self.assertEqual(second.items.get().allocated, 5)
+        red_lot = StockItem.objects.get(artwork_version=1, artwork_unknown=False)
+        self.assertEqual((red_lot.quantity, red_lot.reserved), (10, 5))
+        self.post(f"orders/{second.pk}/ship/", expected=400)
+        red_lot.refresh_from_db()
+        self.assertEqual((red_lot.quantity, red_lot.reserved), (10, 5))
+        self.post(f"labels/{blue}/approve/", {"settle_previous": True})
+        item = second.items.get()
+        self.assertEqual((item.allocated, item.produced), (0, 0))
+        red_lot.refresh_from_db()
+        self.assertEqual((red_lot.quantity, red_lot.reserved), (10, 0))
+        self.post(f"orders/{second.pk}/ship/", expected=400)
+        task = second.tasks.get(kind="production")
+        self.post(f"tasks/{task.pk}/report/", {"units": 5})
+        self.post(f"orders/{second.pk}/ship/")
+        report = Report.objects.get(task__order=second, task__kind="shipping")
+        self.assertEqual(report.label_id, blue)
+        red_lot.refresh_from_db()
+        self.assertEqual((red_lot.quantity, red_lot.reserved), (10, 0))
+        blue_lot = StockItem.objects.get(artwork_version=2)
+        self.assertEqual((blue_lot.quantity, blue_lot.reserved), (0, 0))
+
     def test_unknown_artwork_stock_is_not_allocated(self):
         from .models import StockItem
 

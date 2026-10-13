@@ -389,6 +389,14 @@ def approve_label(request, pk):
     s.ensure_open(order)
     if s.latest_label(label.item).pk != pk:
         raise ValidationError("Zatwierdź najnowszą wersję etykiety.")
+    if s.conflicting_holds(label.item, label):
+        if request.data.get("settle_previous") is not True:
+            raise ValidationError(
+                "To zamówienie ma zarezerwowane albo wyprodukowane opakowania wcześniejszej grafiki. "
+                "Nowa etykieta ich nie zmienia. Rozlicz wcześniejszy zapas jawnym zatwierdzeniem."
+            )
+        s.settle_previous_artwork(label.item, label, request.user)
+        label.item.refresh_from_db()
     label.approved_at = timezone.now()
     label.approved_by = request.user
     label.save()
