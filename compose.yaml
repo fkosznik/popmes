@@ -5,10 +5,23 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-popmes}
+      # This user is created only when the data volume is empty. Changing it
+      # in .env does not rename the role on an existing volume.
       POSTGRES_USER: ${POSTGRES_USER:-popmes}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python3 scripts/setup.py first}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-}
+      POSTGRES_MIGRATE_USER: ${POSTGRES_MIGRATE_USER:-}
+      POSTGRES_MIGRATE_PASSWORD: ${POSTGRES_MIGRATE_PASSWORD:-}
     volumes:
       - database_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-roles.sh:/docker-entrypoint-initdb.d/20-roles.sh:ro
+      - ./docker/postgres/roles.sql:/usr/local/share/popmes/roles.sql:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -21,6 +34,14 @@ services:
     environment:
       POSTGRES_HOST: database
       MEDIA_ROOT: /app/media
+      # Restricted role when configured. Otherwise the original database user.
+      POSTGRES_USER: ${POSTGRES_APP_USER:-${POSTGRES_USER:-popmes}}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-${POSTGRES_PASSWORD}}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     volumes:
       - media_data:/app/media
     depends_on:
@@ -45,6 +66,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 volumes:
   database_data:
   media_data:

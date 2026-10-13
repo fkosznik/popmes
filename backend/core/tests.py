@@ -82,17 +82,17 @@ class FlowTests(TestCase):
     def tasks(self, order):
         return order.tasks.get(kind="production"), order.tasks.get(kind="shipping")
 
-    def png(self):
+    def png(self, color="red"):
         out = io.BytesIO()
-        Image.new("RGB", (5, 5), "red").save(out, "PNG")
+        Image.new("RGB", (5, 5), color).save(out, "PNG")
         out.seek(0)
         out.name = "label.png"
         return out
 
-    def upload(self, item):
+    def upload(self, item, color="red"):
         r = self.client.post(
             f"/api/items/{item.pk}/labels/",
-            {"file": self.png()},
+            {"file": self.png(color)},
             format="multipart",
             HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
         )
@@ -775,6 +775,175 @@ class FlowTests(TestCase):
         self.assertEqual(second.items.get().allocated, 0,
                          "Stock bearing another customer's logo must not be allocated")
         self.assertTrue(second.tasks.filter(kind="production").exists())
+
+    def test_matching_artwork_version_can_be_reserved_again(self):
+        from .models import StockItem
+
+        first = self.order(10, custom=True)
+        production, _ = self.tasks(first)
+        self.post(f"labels/{self.upload(production.item)}/approve/")
+        self.post(f"tasks/{production.pk}/report/", {"units": 10})
+        plain = StockItem.objects.filter(
+            variant=self.variant, artwork_sha256="", artwork_unknown=False
+        ).first()
+        self.assertTrue(plain is None or plain.quantity == 0)
+        self.post(f"orders/{first.pk}/cancel/", {"reason": "Customer cancelled"})
+        second = self.order(4, custom=True)
+        self.assertEqual(second.items.get().allocated, 0)
+        label_id = self.upload(second.items.get(), "red")
+        self.post(f"labels/{label_id}/approve/")
+        self.assertEqual(second.items.get().allocated, 4)
+        lot = StockItem.objects.get(artwork_sha256__gt="", artwork_unknown=False)
+        self.assertEqual((lot.quantity, lot.reserved), (10, 4))
+
+    def test_new_label_version_does_not_take_older_packs(self):
+        from .models import StockItem
+
+        first = self.order(10, custom=True)
+        production, _ = self.tasks(first)
+        self.post(f"labels/{self.upload(production.item, 'red')}/approve/")
+        self.post(f"tasks/{production.pk}/report/", {"units": 6})
+        self.post(f"labels/{self.upload(production.item, 'blue')}/approve/")
+        self.post(f"tasks/{production.pk}/report/", {"units": 4})
+        self.assertEqual(
+            StockItem.objects.filter(variant=self.variant).exclude(artwork_sha256="").count(),
+            2,
+        )
+        self.post(f"orders/{first.pk}/cancel/", {"reason": "Split versions"})
+        second = self.order(10, custom=True)
+        self.post(f"labels/{self.upload(second.items.get(), 'red')}/approve/")
+        self.assertEqual(second.items.get().allocated, 6)
+        blue_v1 = self.order(4, custom=True)
+        self.post(f"labels/{self.upload(blue_v1.items.get(), 'blue')}/approve/")
+        self.assertEqual(blue_v1.items.get().allocated, 0)
+        blue_v2 = self.order(4, custom=True)
+        item = blue_v2.items.get()
+        self.post(f"labels/{self.upload(item, 'green')}/approve/")
+        self.assertEqual(blue_v2.items.get().allocated, 0)
+        self.post(f"labels/{self.upload(item, 'blue')}/approve/")
+        self.assertEqual(blue_v2.items.get().allocated, 4)
+
+    def test_unknown_artwork_stock_is_not_allocated(self):
+        from .models import StockItem
+
+        s.sync_catalog_stock(self.variant)
+        plain = StockItem.objects.get(variant=self.variant, artwork_sha256="")
+        StockItem.objects.create(
+            code="UNK-LEGACY",
+            name="Karmel 30 · grafika nieznana",
+            group="popcorn",
+            unit="szt",
+            quantity=8,
+            variant=self.variant,
+            artwork_unknown=True,
+            category=plain.category,
+        )
+        order = self.order(5, custom=True)
+        self.post(f"labels/{self.upload(order.items.get())}/approve/")
+        self.assertEqual(order.items.get().allocated, 0)
+        legacy = StockItem.objects.get(code="UNK-LEGACY")
+        self.assertEqual((legacy.quantity, legacy.reserved), (8, 0))
+
+    def test_logo_correction_and_receipt_keep_the_same_lot(self):
+        from .models import StockItem
+
+        order = self.order(6, custom=True)
+        production, shipping = self.tasks(order)
+        self.post(f"labels/{self.upload(production.item, 'red')}/approve/")
+        report = self.post(f"tasks/{production.pk}/report/", {"units": 6}).data["id"]
+        lot = StockItem.objects.get(artwork_sha256__gt="")
+        self.post(f"reports/{report}/correct/", {"reason": "Zły zapis"})
+        lot.refresh_from_db()
+        self.assertEqual((lot.quantity, lot.reserved), (0, 0))
+        self.post(f"tasks/{production.pk}/report/", {"units": 6})
+        self.post(f"stock/receipt/", {"stock_id": lot.pk, "quantity": "2", "reason": "Zwrot"})
+        lot.refresh_from_db()
+        self.assertEqual((lot.quantity, lot.reserved), (8, 6))
+        other = self.order(3, custom=True)
+        self.post(f"labels/{self.upload(other.items.get(), 'red')}/approve/")
+        self.assertEqual(other.items.get().allocated, 2)
+        shipped = self.post(f"tasks/{shipping.pk}/report/", {"units": 6}).data["id"]
+        self.post(f"reports/{shipped}/correct/", {"reason": "Cofnij wysyłkę"})
+        lot.refresh_from_db()
+        self.assertEqual(lot.quantity, 8)
+
+    def test_reading_state_does_not_write_business_rows(self):
+        from django.test.utils import CaptureQueriesContext
+        from .models import StockItem
+
+        s.sync_catalog_stock()
+        extra = Variant.objects.create(
+            product=self.product, sku="NO-SYNC", name="Bez synchronizacji", weight_g=30
+        )
+        before = list(StockItem.objects.order_by("pk").values_list("pk", "quantity", "reserved", "name"))
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get("/api/state/")
+            detail = self.client.get(f"/api/stock/{StockItem.objects.get(code='CUKIER').pk}/detail/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(detail.status_code, 200)
+        self.assertFalse(StockItem.objects.filter(variant=extra).exists())
+        self.assertEqual(
+            before,
+            list(StockItem.objects.order_by("pk").values_list("pk", "quantity", "reserved", "name")),
+        )
+        writes = [
+            query["sql"]
+            for query in ctx.captured_queries
+            if query["sql"].lstrip()[:6].upper() in {"INSERT", "UPDATE", "DELETE"}
+            and "core_" in query["sql"].lower()
+        ]
+        self.assertEqual(writes, [])
+
+    def test_order_page_does_not_shrink_the_totals(self):
+        self.order(5)
+        self.order(6)
+        self.order(7)
+        response = self.client.get("/api/state/?orders_scope=page&orders_limit=1")
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(len(body["orders"]), 1)
+        self.assertGreaterEqual(body["summary"]["orders"], 3)
+        self.assertGreaterEqual(body["summary"]["active"], 3)
+        self.assertGreaterEqual(body["orders_page"]["count"], 3)
+        hidden = self.client.get("/api/state/?orders_scope=none")
+        self.assertEqual(hidden.json()["orders"], [])
+        self.assertGreaterEqual(hidden.json()["summary"]["orders"], 3)
+
+    def test_login_attempts_are_limited_for_every_worker(self):
+        client = APIClient()
+        for _ in range(10):
+            response = client.post(
+                "/api/auth/login/",
+                {"username": "admin", "password": "wrong-password"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 400, response.content)
+        blocked = client.post(
+            "/api/auth/login/",
+            {"username": "admin", "password": "wrong-password"},
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, 429, blocked.content)
+
+    def test_technical_cleanup_keeps_orders_and_stock_history(self):
+        from django.core.management import call_command
+        from django.utils import timezone
+        from datetime import timedelta
+        from .models import LoginAttempt, RequestReceipt, StockMove
+
+        order = self.order(4)
+        production, _ = self.tasks(order)
+        self.post(f"tasks/{production.pk}/report/", {"units": 2})
+        RequestReceipt.objects.update(created_at=timezone.now() - timedelta(days=8))
+        LoginAttempt.objects.create(
+            ident="abc", created_at=timezone.now() - timedelta(days=2)
+        )
+        moves = StockMove.objects.count()
+        call_command("purge_technical")
+        self.assertEqual(Order.objects.filter(pk=order.pk).count(), 1)
+        self.assertEqual(StockMove.objects.count(), moves)
+        self.assertEqual(RequestReceipt.objects.count(), 0)
+        self.assertEqual(LoginAttempt.objects.count(), 0)
 
 
     # Scenario references (independent POPMES implementation):

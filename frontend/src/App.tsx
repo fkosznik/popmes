@@ -367,6 +367,7 @@ export default function App() {
       key: OrderSortKey;
       dir: "asc" | "desc";
     } | null>(null),
+    [ordersOffset, setOrdersOffset] = useState(0),
     [catalogTab, setCatalogTab] = useState("variants");
   const [modal, setModal] = useState<ModalState | null>(null),
     [selected, setSelected] = useState<number | null>(null),
@@ -422,21 +423,37 @@ export default function App() {
   const can = (...r: string[]) =>
     Boolean(user?.roles.some((x) => r.includes(x)));
   const load = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (page === "dashboard") params.set("orders_scope", "upcoming");
+    else if (page === "orders") {
+      params.set("orders_scope", "page");
+      params.set("orders_limit", "50");
+      params.set("orders_offset", String(ordersOffset));
+      if (query) params.set("orders_q", query);
+      if (filter) params.set("orders_status", filter);
+      if (orderSort) {
+        params.set("orders_sort", orderSort.key);
+        params.set("orders_dir", orderSort.dir);
+      }
+    } else params.set("orders_scope", "none");
     try {
-      const data = await api<State>("state/");
+      const data = await api<State>("state/?" + params.toString());
       setState(data);
       setUser(data.user);
       setOffline(false);
     } catch {
       setOffline(true);
     }
-  }, []);
+  }, [page, query, filter, orderSort, ordersOffset]);
   useEffect(() => {
     api<{ user: User | null }>("auth/me/")
       .then((r) => setUser(r.user))
       .catch((e) => setError(errorText(e)))
       .finally(() => setBoot(false));
   }, []);
+  useEffect(() => {
+    setOrdersOffset(0);
+  }, [query, filter, orderSort, page]);
   useEffect(() => {
     if (user) {
       load();
@@ -451,12 +468,26 @@ export default function App() {
     }
   }, [toast]);
   useEffect(() => {
-    if (selected !== null && user)
+    if (selected === null || !user) {
+      setDetail(null);
+      return;
+    }
+    let cancel = false;
+    const pull = () =>
       api<Detail>(`orders/${selected}/`)
-        .then(setDetail)
-        .catch((e) => setError(errorText(e)));
-    else setDetail(null);
-  }, [selected, state]);
+        .then((data) => {
+          if (!cancel) setDetail(data);
+        })
+        .catch((e) => {
+          if (!cancel) setError(errorText(e));
+        });
+    pull();
+    const timer = setInterval(pull, 5000);
+    return () => {
+      cancel = true;
+      clearInterval(timer);
+    };
+  }, [selected, user?.id]);
   useEffect(() => {
     if (!user || focus?.kind !== "stock") {
       setStockExtra(null);
@@ -466,17 +497,21 @@ export default function App() {
     const id = focus.id;
     let cancel = false;
     setHistoryFailed(false);
-    api<StockDetail>(`stock/${id}/detail/`)
-      .then((data) => {
-        if (!cancel) setStockExtra(data);
-      })
-      .catch(() => {
-        if (!cancel) setHistoryFailed(true);
-      });
+    const pull = () =>
+      api<StockDetail>(`stock/${id}/detail/`)
+        .then((data) => {
+          if (!cancel) setStockExtra(data);
+        })
+        .catch(() => {
+          if (!cancel) setHistoryFailed(true);
+        });
+    pull();
+    const timer = setInterval(pull, 15000);
     return () => {
       cancel = true;
+      clearInterval(timer);
     };
-  }, [user, focus, state]);
+  }, [user, focus]);
   useEffect(() => {
     if ((page === "admin" || page === "users") && user)
       api<User[]>("users/")
@@ -585,6 +620,10 @@ export default function App() {
       if (close) setModal(null);
       setToast(t(lang, "saved"));
       await load();
+      if (selected !== null) {
+        const fresh = await api<Detail>(`orders/${selected}/`);
+        setDetail(fresh);
+      }
       return result;
     } catch (e) {
       setError(errorText(e));
@@ -843,24 +882,26 @@ export default function App() {
     ? (state?.variants || []).find((row) => row.id === focusedStock.variant_id)
     : undefined;
   const productionRemaining = can("sales", "manager")
-    ? active.reduce(
+    ? (state?.summary?.production_remaining ??
+      active.reduce(
         (sum, order) =>
           sum + order.items.reduce((a, item) => a + produceLeft(item), 0),
         0,
-      )
+      ))
     : production.reduce((sum, task) => sum + produceLeft(task.item), 0);
   const packingRemaining = can("sales", "manager")
-    ? active.reduce(
+    ? (state?.summary?.packing_remaining ??
+      active.reduce(
         (sum, order) => sum + Math.max(0, order.units - order.packed),
         0,
-      )
+      ))
     : packing.reduce(
         (sum, task) =>
           sum + (task.item ? task.item.quantity - task.item.packed : 0),
         0,
       );
   const overdueCount = can("sales", "manager")
-    ? orders.filter(late).length
+    ? (state?.summary?.overdue ?? orders.filter(late).length)
     : new Set(
         tasks
           .filter(
@@ -871,26 +912,30 @@ export default function App() {
           )
           .map((task) => task.order_id),
       ).size;
-  const filteredOrders = orders.filter(
-    (o) =>
-      (filter === "all" ||
-        o.status === filter ||
-        (filter === "late" && late(o))) &&
-      (
-        o.number +
-        " " +
-        o.customer_name +
-        " " +
-        o.items.map((i) => i.name).join(" ")
-      )
-        .toLowerCase()
-        .includes(query.toLowerCase()),
-  );
-  const sortedOrders = orderSort
-    ? [...filteredOrders].sort((a, b) =>
-        compareOrders(a, b, orderSort.key, orderSort.dir),
-      )
-    : filteredOrders;
+  const filteredOrders =
+    page === "orders"
+      ? orders
+      : orders.filter(
+          (o) =>
+            (filter === "all" ||
+              o.status === filter ||
+              (filter === "late" && late(o))) &&
+            (
+              o.number +
+              " " +
+              o.customer_name +
+              " " +
+              o.items.map((i) => i.name).join(" ")
+            )
+              .toLowerCase()
+              .includes(query.toLowerCase()),
+        );
+  const sortedOrders =
+    page === "orders" || !orderSort
+      ? filteredOrders
+      : [...filteredOrders].sort((a, b) =>
+          compareOrders(a, b, orderSort.key, orderSort.dir),
+        );
   function toggleOrderSort(key: OrderSortKey) {
     setOrderSort((current) =>
       current?.key === key
@@ -1101,8 +1146,8 @@ export default function App() {
               >
                 <n.icon size={19} />
                 {n.title}
-                {n.id === "orders" && active.length > 0 && (
-                  <b>{active.length}</b>
+                {n.id === "orders" && (state?.summary?.active || active.length) > 0 && (
+                  <b>{state?.summary?.active ?? active.length}</b>
                 )}
               </button>
             ))}
@@ -1548,7 +1593,7 @@ export default function App() {
                       }
                       value={
                         can("sales", "manager")
-                          ? active.length
+                          ? (state?.summary?.active ?? active.length)
                           : tasks.filter((t) => t.status !== "done").length
                       }
                       sub="Wspólny plan zespołu"
@@ -1780,6 +1825,45 @@ export default function App() {
                     </select>
                   </Toolbar>
                   {orderTable(sortedOrders, true)}
+                  {(state?.orders_page?.count || 0) > (state?.orders_page?.limit || 50) && (
+                    <div className="pager">
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={ordersOffset <= 0}
+                        onClick={() =>
+                          setOrdersOffset((current) =>
+                            Math.max(0, current - (state?.orders_page?.limit || 50)),
+                          )
+                        }
+                      >
+                        Poprzednie
+                      </button>
+                      <span>
+                        {ordersOffset + 1}–
+                        {Math.min(
+                          ordersOffset + orders.length,
+                          state?.orders_page?.count || 0,
+                        )}{" "}
+                        z {state?.orders_page?.count}
+                      </span>
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={
+                          ordersOffset + (state?.orders_page?.limit || 50) >=
+                          (state?.orders_page?.count || 0)
+                        }
+                        onClick={() =>
+                          setOrdersOffset(
+                            (current) => current + (state?.orders_page?.limit || 50),
+                          )
+                        }
+                      >
+                        Następne
+                      </button>
+                    </div>
+                  )}
                 </section>
               )}
               {page === "shipping" && (

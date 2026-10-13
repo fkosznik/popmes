@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand
 from core.models import Product, Variant
+from core.services import ensure_plain_stock
 
 
 class Command(BaseCommand):
@@ -34,6 +35,8 @@ class Command(BaseCommand):
                             "instruction": "Sprawdź smak, gramaturę i etykietę. Zgrzej opakowanie.",
                         },
                     )
+        for variant in Variant.objects.all():
+            ensure_plain_stock(variant)
         self.stdout.write(
             "Starter catalog ready (editable; packaging and formats require your review)."
         )

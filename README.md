@@ -2,7 +2,7 @@
 
 **Production Operations Platform – Manufacturing Execution System** dla POPME.
 
-Aplikacja webowa po polsku: **zamówienie → produkcja w kg → pakowanie w sztukach → wydanie**. Backend Python/Django + Django REST Framework, interfejs TypeScript/React, PostgreSQL, Docker Compose.
+Aplikacja webowa po polsku: **zamówienie → produkcja gotowych opakowań w sztukach → wysyłka przesyłki do klienta**. Backend Python/Django + Django REST Framework, interfejs TypeScript/React, PostgreSQL, Docker Compose.
 
 ## Uruchomienie
 
@@ -17,7 +17,7 @@ docker compose up -d --build
 
 Otwórz **http://localhost:8080**. Login: **admin**. Losowe hasło wyświetli skrypt konfiguracji; jest również zapisane w lokalnym `.env`. Przy kolejnych uruchomieniach istniejące hasło nie jest resetowane. `.env` nie trafia do repozytorium.
 
-Pierwszy start wykonuje migracje, tworzy konto administratora i przykładowy katalog POPME: cztery smaki, formaty 30/100/400 g i warianty z logo. **Sprawdź i dostosuj ten katalog do rzeczywistej oferty oraz opakowań.** Automatyczne tworzenie katalogu można wyłączyć przez `SEED_CATALOG=0`.
+Pierwszy start pustej bazy wykonuje migracje, tworzy konto administratora i przykładowy katalog POPME: cztery smaki, formaty 30/100/400 g i warianty z logo. **Sprawdź i dostosuj ten katalog do rzeczywistej oferty oraz opakowań.** Automatyczne tworzenie katalogu można wyłączyć przez `SEED_CATALOG=0`. Zwykły restart kontenera nie uruchamia migracji ponownie. Na istniejącej bazie migracje robi `bash scripts/migrate.sh` albo `bash scripts/update.sh`.
 
 Opcjonalne przykładowe zamówienia, wyraźnie oznaczone jako DEMO:
 
@@ -32,8 +32,8 @@ Polecenie nie tworzy dodatkowych kont ani nie nadpisuje istniejących danych. Mo
 1. W **Klientach** dodaj odbiorcę (automatycznie aktywny) i jego lokalizacje dostawy.
 2. W **Zamówieniach** kliknij **Nowe zamówienie**, wybierz klienta, zapisany adres dostawy, termin, produkty i sztuki. Przy produkcie „z logo” możesz od razu wgrać grafikę. **Zatwierdź do realizacji** tworzy zlecenie produkcji na każde opakowanie. Przy kurierze powstaje też zlecenie przesyłki.
 3. W szczegółach pozycji z logo wgraj PDF, PNG lub JPG i zatwierdź etykietę.
-4. W **Produkcji** rozpocznij zadanie i zgłoś gotowe opakowania, nie kilogramy. Możesz zgłaszać częściami. Grafika z logo musi być zatwierdzona, zanim powstaną opakowania.
-5. W **Pakowaniu** dodaj wyprodukowane opakowania do przesyłki kuriera. Bez gotowych opakowań przesyłki nie da się utworzyć.
+4. W **Produkcji** rozpocznij zadanie i zgłoś gotowe opakowania w sztukach. Możesz zgłaszać częściami. Grafika z logo musi być zatwierdzona, zanim powstaną opakowania. Gotowe opakowania z logo zostają przy tym projekcie i tej wersji etykiety; nie wracają do wspólnego zapasu innego klienta.
+5. W **Pakowaniu** oznacz przesyłkę dla klienta. Bez gotowych opakowań przesyłki nie da się utworzyć.
 6. Po zakończeniu wszystkich pozycji zamówienie ma status **Zrealizowane**. Sprzedaż oznacza **Wydane**.
 
 Każde zgłoszenie oznacza **nową, dodatkową ilość**. Wprowadzanie 50 szt. dwa razy daje 100 szt.; bezpieczne ponowienie tego samego żądania po błędzie połączenia nie tworzy duplikatu.
@@ -57,7 +57,7 @@ Receptury/BOM, pełny magazyn surowców, optymalizacja harmonogramu, połączeni
 
 ## Konta i role
 
-W ekranie **Zespół** administrator tworzy pracowników, hasła i role:
+W ekranie **Administracja** administrator tworzy pracowników, hasła i role:
 
 | Rola | Dostęp |
 |---|---|
@@ -89,28 +89,23 @@ Caddy pobiera certyfikat; porty 80/443 muszą być dostępne dla tej domeny. Baz
 
 ## Kopie i aktualizacje
 
+Szczegóły ról bazy, restic, aktualizacji konkretnej rewizji i odzyskania: [operacje](docs/operacje.md).
+
 ```bash
 bash scripts/backup.sh
-# Przy aktualizacji: najpierw kopia, potem:
-git pull --ff-only
-docker compose up -d --build
+bash scripts/update.sh <tag-albo-commit> --verified
 ```
 
-Kopia obejmuje bazę i załączniki z jednego spójnego momentu. Backend jest na krótko zatrzymany; w tym czasie aplikacja nie przyjmuje zapisów. Kopie zapisują się w `backups/`, a katalog docelowy można zmienić przez `BACKUP_DIR`. **Skopiuj kopie oraz `.env` poza host aplikacji.** Skrypt nie konfiguruje automatycznie zewnętrznego magazynu.
+Kopia obejmuje bazę i grafiki z jednego momentu. Backend jest na krótko zatrzymany. Lokalny katalog to `backups/` albo `BACKUP_DIR`. Wysyłka poza VM działa dopiero po ustawieniu repozytorium restic i udanej próbie. Harmonogram jest w `deploy/popmes-backup.cron` i trzeba go zainstalować na hoście.
 
-Przykład codziennego uruchomienia z crona na hoście (dostosuj ścieżkę i konto z dostępem do Dockera):
-
-```cron
-0 2 * * * cd /srv/popmes && bash scripts/backup.sh >> /srv/popmes-backup.log 2>&1
-```
-
-Odtwarzanie **zastępuje aktualną bazę i załączniki**. Najpierw sprawdź je na oddzielnym środowisku:
+Odtwarzanie na tę samą instalację **zastępuje** bazę i grafiki. Zapisy zrobione po kopii przepadają. Najpierw sprawdź kopię osobno:
 
 ```bash
+bash scripts/backup-restore-test.sh
 bash scripts/restore.sh /pelna/sciezka/do/kopii --replace-current-data
 ```
 
-Przy instalacji HTTPS ustaw `COMPOSE_FILE=compose.yaml:compose.https.yaml` w środowisku, z którego uruchamiasz skrypty. Weryfikuj logi kopii i okresowo wykonuj test odtworzenia. Nie usuwaj wolumenów poleceniem `docker compose down -v` w działającej instalacji.
+Nie usuwaj wolumenów poleceniem `docker compose down -v` w działającej instalacji. Nie podnoś w ten sposób głównej wersji PostgreSQL.
 
 ## Testy i rozwój
 
@@ -133,10 +128,11 @@ Lokalny rozwój bez Dockera: Python 3.12, `pip install -r backend/requirements.t
 - [Specyfikacja funkcjonalna](docs/specyfikacja.md)
 - [Architektura i API](docs/architektura.md)
 - [Stan implementacji i dalszy rozwój](docs/stan-implementacji.md)
+- [Operacje: role bazy, kopie, aktualizacja](docs/operacje.md)
 
 ## Aktualizacja: opakowania i przesyłki
 
-Produkcja kończy się gotowymi opakowaniami. Wolny stan z magazynu schodzi na zamówienie, a produkcja dostaje tylko brakującą liczbę. Karta **Magazyn** pozwala dodawać kategorie, produkty i przyjęcia towaru. Katalog produktów pokazuje te same ilości. Receptura wariantu zużywa surowce przy zgłoszeniu produkcji. Surowiec może mieć dostawcę. Kliknięcie pozycji pokazuje szczegóły oraz edycję nazwy i dostawcy. Zakładka **Wysyłka** pokazuje całe zamówienie z adresem i kontaktem. Przycisk **Wysłano** oznacza całą przesyłkę.
+Produkcja kończy się gotowymi opakowaniami w sztukach. Wolny stan standardowego produktu schodzi na zamówienie, a produkcja dostaje tylko brakującą liczbę. Opakowania z logo są osobną partią wariantu, projektu graficznego i wersji etykiety. Karta **Magazyn** pozwala dodawać kategorie, produkty i przyjęcia towaru. Katalog produktów pokazuje wspólny stan wariantu, bez cudzych grafik. Receptura wariantu zużywa surowce przy zgłoszeniu produkcji. Surowiec może mieć dostawcę. Kliknięcie pozycji pokazuje szczegóły oraz edycję nazwy i dostawcy. Zakładka **Wysyłka** pokazuje całe zamówienie z adresem i kontaktem. Przycisk **Wysłano** oznacza całą przesyłkę.
 
 Migracja 0004 dopisuje liczbę wyprodukowanych opakowań i tabelę przesyłek. Dla starszych pozycji przyjmuje, że już zapakowane sztuki są wyprodukowanymi opakowaniami. Nie kasuje zamówień ani plików. Przed aktualizacją wykonaj `bash scripts/backup.sh`, potem `docker compose up -d --build`.
 

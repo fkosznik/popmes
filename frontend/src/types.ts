@@ -210,6 +210,9 @@ export type StockItem = {
   available: string;
   category_id: number | null;
   variant_id: number | null;
+  artwork_sha256: string;
+  artwork_version: number | null;
+  artwork_unknown: boolean;
   supplier_id: number | null;
   supplier_name: string;
 };
@@ -257,6 +260,14 @@ export type State = {
   variants: Variant[];
   customers: Customer[];
   orders: Order[];
+  summary: {
+    orders: number;
+    active: number;
+    overdue: number;
+    production_remaining: number;
+    packing_remaining: number;
+  };
+  orders_page: { limit: number; offset: number; count: number };
   tasks: Task[];
   batches: Batch[];
   stock: StockItem[];
