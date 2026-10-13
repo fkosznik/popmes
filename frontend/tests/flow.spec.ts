@@ -152,6 +152,9 @@ test("grafika przy pozycji z logo", async ({ page }) => {
     .last()
     .getAttribute("value");
   await customer.selectOption(cid!);
+  const address = page.getByRole("combobox", { name: /Adres dostawy/ });
+  const addressId = await address.locator("option").nth(1).getAttribute("value");
+  await address.selectOption(addressId!);
   await page.getByLabel("Termin gotowości").fill("2026-12-01T15:00");
   await page.getByRole("button", { name: "30 g", exact: true }).click();
   await page

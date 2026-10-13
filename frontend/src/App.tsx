@@ -620,6 +620,10 @@ export default function App() {
       if (close) setModal(null);
       setToast(t(lang, "saved"));
       await load();
+      if (selected !== null) {
+        const fresh = await api<Detail>(`orders/${selected}/`);
+        setDetail(fresh);
+      }
       return result;
     } catch (e) {
       setError(errorText(e));
