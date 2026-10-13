@@ -26,13 +26,13 @@ else
   echo "disk: ${usage}% used"
 fi
 backup_root="${BACKUP_DIR:-./backups}"
+now=$(date -u +%s)
 stamp="$backup_root/LAST_SUCCESS"
 max_age_hours="${BACKUP_MAX_AGE_HOURS:-30}"
 if [ ! -f "$stamp" ]; then
   echo "backup: no LAST_SUCCESS"
   fail=1
 else
-  now=$(date -u +%s)
   # GNU date on the VM. macOS date cannot parse this; the check is for the server.
   then=$(date -u -d "$(cat "$stamp")" +%s 2>/dev/null || echo 0)
   age_hours=$(( (now - then) / 3600 ))
@@ -43,14 +43,31 @@ else
     echo "backup: last success ${age_hours}h ago"
   fi
 fi
+status="unknown"
 if [ -f "$backup_root/OFFSITE_STATUS" ]; then
   status="$(cat "$backup_root/OFFSITE_STATUS")"
-  echo "offsite: ${status}"
-  if [ "$status" != "ok" ] && [ "$status" != "not_configured" ]; then
+fi
+echo "offsite: ${status}"
+if [ "$status" != "ok" ] && [ "$status" != "not_configured" ]; then
+  fail=1
+fi
+if [ "${OFFSITE_REQUIRED:-0}" = "1" ] && [ "$status" != "ok" ]; then
+  echo "offsite: required but last attempt is ${status}"
+  fail=1
+fi
+if [ "$status" = "ok" ]; then
+  offsite_stamp="$backup_root/OFFSITE_SUCCESS"
+  if [ ! -f "$offsite_stamp" ]; then
+    echo "offsite: status ok without a success timestamp"
     fail=1
+  else
+    offsite_then=$(date -u -d "$(cat "$offsite_stamp")" +%s 2>/dev/null || echo 0)
+    offsite_age=$(( (now - offsite_then) / 3600 ))
+    if [ "$offsite_then" -eq 0 ] || [ "$offsite_age" -ge "$max_age_hours" ]; then
+      echo "offsite: last success is ${offsite_age}h old"
+      fail=1
+    fi
   fi
-else
-  echo "offsite: unknown"
 fi
 if [ -n "${ALERT_WEBHOOK_URL:-}" ] && [ "$fail" -ne 0 ]; then
   curl -fsS --max-time 10 -H "Content-Type: text/plain" --data "POPMES monitor failed on $(hostname)" "$ALERT_WEBHOOK_URL" >/dev/null || true

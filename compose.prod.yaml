@@ -1,0 +1,9 @@
+# Production overlay. The long-running backend receives only the application role.
+# Migration, backup and alert secrets stay on the host and in one-shot commands.
+services:
+  backend:
+    environment:
+      POPMES_ENV: production
+      DEBUG: "0"
+      POSTGRES_USER: ${POSTGRES_APP_USER:?Set POSTGRES_APP_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}

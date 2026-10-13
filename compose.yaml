@@ -9,10 +9,6 @@ services:
       # in .env does not rename the role on an existing volume.
       POSTGRES_USER: ${POSTGRES_USER:-popmes}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python3 scripts/setup.py first}
-      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-}
-      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-}
-      POSTGRES_MIGRATE_USER: ${POSTGRES_MIGRATE_USER:-}
-      POSTGRES_MIGRATE_PASSWORD: ${POSTGRES_MIGRATE_PASSWORD:-}
     volumes:
       - database_data:/var/lib/postgresql/data
       - ./docker/postgres/init-roles.sh:/docker-entrypoint-initdb.d/20-roles.sh:ro
@@ -30,13 +26,26 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
-    env_file: .env
     environment:
+      POPMES_ENV: ${POPMES_ENV:-local}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY}
+      DEBUG: ${DEBUG:-0}
+      POSTGRES_DB: ${POSTGRES_DB:-popmes}
       POSTGRES_HOST: database
-      MEDIA_ROOT: /app/media
-      # Restricted role when configured. Otherwise the original database user.
+      # Local and CI may use the database superuser. Production compose replaces this.
       POSTGRES_USER: ${POSTGRES_APP_USER:-${POSTGRES_USER:-popmes}}
       POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-${POSTGRES_PASSWORD}}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+      SEED_CATALOG: ${SEED_CATALOG:-1}
+      MEDIA_ROOT: /app/media
+      SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-0}
+      SECURE_HSTS_INCLUDE_SUBDOMAINS: ${SECURE_HSTS_INCLUDE_SUBDOMAINS:-0}
+      LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-30}
+      LOGIN_ACCOUNT_LIMIT: ${LOGIN_ACCOUNT_LIMIT:-10}
     logging:
       driver: json-file
       options:

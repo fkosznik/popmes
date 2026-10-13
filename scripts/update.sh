@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
-# Update this checkout to a specific commit or tag. Does not restore the database
+# Update this checkout to a specific commit. Does not restore the database
 # and does not upgrade the PostgreSQL major version.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# shellcheck disable=SC1091
+source "$(dirname "$0")/ops-common.sh"
+ops_root
 if [ "${1:-}" = "" ] || [ "${2:-}" != "--verified" ]; then
   echo "Usage: bash scripts/update.sh <tag-or-commit> --verified" >&2
-  echo "Pass --verified only after the required GitHub checks for that revision are green." >&2
   exit 1
 fi
 target="$1"
-lock_dir="${PWD}/.update.lock"
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  echo "Another update holds ${lock_dir}. Wait until it finishes." >&2
-  exit 1
-fi
-cleanup() { rmdir "$lock_dir" 2>/dev/null || true; }
+ops_lock
+cleanup() { ops_unlock; }
 trap cleanup EXIT
 if [ ! -f .env ]; then
   echo "Missing .env. Refusing to update." >&2
@@ -28,13 +25,16 @@ set -a
 # shellcheck disable=SC1091
 source .env
 set +a
+compose_args
 if [ "${DEBUG:-0}" = "1" ]; then
   echo "DEBUG=1. Refusing to update a production checkout with debug enabled." >&2
   exit 1
 fi
-if [ -z "${DJANGO_SECRET_KEY:-}" ] || [ -z "${POSTGRES_PASSWORD:-}" ]; then
-  echo ".env is missing DJANGO_SECRET_KEY or POSTGRES_PASSWORD." >&2
-  exit 1
+if [ "${POPMES_ENV:-local}" = "production" ]; then
+  if [ -z "${POSTGRES_APP_USER:-}" ] || [ -z "${POSTGRES_APP_PASSWORD:-}" ] || [ -z "${POSTGRES_MIGRATE_USER:-}" ] || [ -z "${POSTGRES_MIGRATE_PASSWORD:-}" ]; then
+    echo "Production update requires the restricted application and migration roles." >&2
+    exit 1
+  fi
 fi
 git fetch --tags origin
 if ! git rev-parse --verify --quiet "${target}^{commit}" >/dev/null; then
@@ -43,46 +43,72 @@ if ! git rev-parse --verify --quiet "${target}^{commit}" >/dev/null; then
 fi
 current="$(git rev-parse HEAD)"
 resolved="$(git rev-parse "${target}^{commit}")"
+repo_slug="$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+if ! command -v gh >/dev/null 2>&1; then
+  echo "gh is not available, so CI for ${resolved} cannot be verified." >&2
+  exit 1
+fi
+checks="$(gh api --jq '.check_runs[] | [.name, .conclusion, .head_sha] | @tsv' "repos/${repo_slug}/commits/${resolved}/check-runs" || true)"
+for required in quality application; do
+  conclusion="$(printf '%s\n' "$checks" | awk -F '\t' -v name="$required" -v sha="$resolved" '$1 == name && $3 == sha { print $2; exit }')"
+  if [ "$conclusion" != "success" ]; then
+    echo "Required check ${required} for ${resolved} is '${conclusion:-missing}', not success." >&2
+    exit 1
+  fi
+done
 mkdir -p updates
 printf '%s current=%s target=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$current" "$resolved" >> updates/history.log
+docker image inspect popmes-backend:latest >/dev/null
+docker image inspect popmes-frontend:latest >/dev/null
+docker tag popmes-backend:latest "popmes-backend:${current}"
+docker tag popmes-frontend:latest "popmes-frontend:${current}"
+printf '%s\n' "$current" > updates/previous-image
+rollback_code() {
+  git checkout --detach "$current" >/dev/null
+  docker tag "popmes-backend:${current}" popmes-backend:latest
+  docker tag "popmes-frontend:${current}" popmes-frontend:latest
+  POPMES_LOCK_HELD=1 docker compose "${COMPOSE_ARGS[@]}" up -d --no-build
+}
 echo "Building images for ${resolved} before stopping the application."
 git checkout --detach "$resolved"
-files=(-f compose.yaml)
-if [ "${USE_HTTPS:-0}" = "1" ]; then
-  files+=(-f compose.https.yaml)
+if ! docker compose "${COMPOSE_ARGS[@]}" build; then
+  echo "Build failed. The running images were not replaced." >&2
+  rollback_code || true
+  echo "Backend was left as it was before the build. Database was not restored." >&2
+  exit 1
 fi
-docker compose "${files[@]}" build
 echo "Stopping the backend so backup and migrations see a quiet database."
-docker compose "${files[@]}" stop backend
-if ! bash scripts/backup.sh; then
-  echo "Backup failed. Backend is stopped. Restore the previous code with:" >&2
-  echo "  git checkout ${current} && docker compose ${files[*]} up -d" >&2
-  echo "Do not run restore unless you intend to discard writes made after the last good backup." >&2
-  exit 1
-fi
-# backup.sh starts the backend again. Stop it before migrating.
-docker compose "${files[@]}" stop backend
-if ! bash scripts/migrate.sh; then
-  echo "Migration failed. The new code is checked out and the backend is stopped." >&2
-  echo "The database was not restored. A backup was written before the migration." >&2
-  echo "Code rollback (does not undo migrations):" >&2
+docker compose "${COMPOSE_ARGS[@]}" stop backend
+if ! POPMES_KEEP_BACKEND_STOPPED=1 POPMES_LOCK_HELD=1 bash scripts/backup.sh; then
+  echo "Backup failed. The backend is still stopped. No migration was started." >&2
+  echo "Code rollback uses the previous image, not a rebuild:" >&2
   echo "  git checkout ${current}" >&2
-  echo "  docker compose ${files[*]} up -d" >&2
-  echo "Database rollback is a separate, explicit restore of that backup." >&2
-  echo "Restoring it discards every write made after the backup." >&2
+  echo "  docker tag popmes-backend:${current} popmes-backend:latest" >&2
+  echo "  docker tag popmes-frontend:${current} popmes-frontend:latest" >&2
+  echo "  docker compose ${COMPOSE_ARGS[*]} up -d --no-build" >&2
   exit 1
 fi
-docker compose "${files[@]}" up -d
-echo "Waiting for health checks."
-if ! docker compose "${files[@]}" up -d --wait --wait-timeout 180; then
-  echo "Containers did not become healthy." >&2
-  echo "Inspect: docker compose ${files[*]} ps && docker compose ${files[*]} logs --tail 80" >&2
-  echo "Code rollback: git checkout ${current} && docker compose ${files[*]} up -d --build" >&2
-  echo "That does not return the database to the backup. Run scripts/restore.sh only when you accept losing later writes." >&2
+if ! POPMES_LOCK_HELD=1 bash scripts/migrate.sh; then
+  echo "Migration failed. The backend is stopped. The database was not restored." >&2
+  echo "Code rollback does not undo migrations. Use the previous image:" >&2
+  echo "  docker tag popmes-backend:${current} popmes-backend:latest" >&2
+  echo "  docker tag popmes-frontend:${current} popmes-frontend:latest" >&2
+  echo "  git checkout ${current} && docker compose ${COMPOSE_ARGS[*]} up -d --no-build" >&2
   exit 1
 fi
-if ! curl -fsS --max-time 10 "http://127.0.0.1:${APP_PORT:-8080}/api/health/" >/dev/null; then
-  echo "Health endpoint did not answer on 127.0.0.1:${APP_PORT:-8080}." >&2
+if ! docker compose "${COMPOSE_ARGS[@]}" up -d --no-build --wait --wait-timeout 180; then
+  echo "Containers did not become healthy. Backend may be running and failing its check." >&2
+  echo "Rollback to the previous image without rebuilding:" >&2
+  echo "  docker tag popmes-backend:${current} popmes-backend:latest" >&2
+  echo "  docker tag popmes-frontend:${current} popmes-frontend:latest" >&2
+  echo "  git checkout ${current} && docker compose ${COMPOSE_ARGS[*]} up -d --no-build" >&2
+  echo "Do not restore the database unless you accept losing writes made after the backup." >&2
+  exit 1
+fi
+url="$(health_url)"
+if ! curl -fsS --max-time 10 "$url" >/dev/null; then
+  echo "Health endpoint did not answer at ${url}." >&2
+  echo "Containers were started. Rollback uses the previous image and does not restore the database." >&2
   exit 1
 fi
 echo "Update finished. Running ${resolved}. Previous revision ${current}."

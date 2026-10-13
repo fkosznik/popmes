@@ -3,7 +3,9 @@
 # Does not delete data, rename the current superuser, or change POSTGRES_USER
 # inside the database container. Run this before pointing the app at popmes_app.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# shellcheck disable=SC1091
+source "$(dirname "$0")/ops-common.sh"
+ops_root
 if [ ! -f .env ]; then
   echo "Missing .env. Run python3 scripts/setup.py first." >&2
   exit 1
@@ -31,7 +33,16 @@ if [ "$app_user" = "${POSTGRES_USER:-popmes}" ] || [ "$migrate_user" = "${POSTGR
 fi
 echo "Creating roles ${migrate_user} and ${app_user} in database ${database}."
 echo "The existing superuser is left in place. No rows are deleted."
-docker compose exec -T \
+compose_args
+ops_lock
+cleanup() {
+  status=$?
+  trap - EXIT
+  ops_unlock
+  exit "$status"
+}
+trap cleanup EXIT
+docker compose "${COMPOSE_ARGS[@]}" exec -T \
   -e APP_USER="$app_user" \
   -e MIGRATE_USER="$migrate_user" \
   -e APP_DB="$database" \

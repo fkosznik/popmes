@@ -27,20 +27,20 @@ Docelowo są trzy konta:
 | `POSTGRES_MIGRATE_USER` (domyślnie `popmes_migrate`) | Tworzenie i zmiana tabel | Nie jest superuserem i nie tworzy ról ani baz |
 | `POSTGRES_APP_USER` (domyślnie `popmes_app`) | Działająca aplikacja: odczyt i zapis wierszy | Nie tworzy tabel, ról ani baz |
 
-Nowa instalacja tworzy role przy pierwszym starcie bazy, jeśli w `.env` są hasła `POSTGRES_APP_PASSWORD` i `POSTGRES_MIGRATE_PASSWORD`. Istniejący wolumen wymaga osobnego kroku:
+Hasła ról nie wchodzą do środowiska długo działającej bazy ani backendu. Nowa instalacja z ograniczonymi rolami:
 
 ```bash
+docker compose up -d database
 # dopisz hasła do .env, potem:
 bash scripts/postgres-roles.sh
-```
-
-Skrypt nie kasuje danych i nie zmienia nazwy dotychczasowego superusera. Po jego powodzeniu ustaw w `.env` użytkownika aplikacji i zrestartuj backend. Migracje od tej chwili:
-
-```bash
 bash scripts/migrate.sh
 ```
 
-Hasło roli migracji nie jest wpisywane do długo działającego kontenera backendu. CI zostawia użytkownika z prawem tworzenia testowej bazy. To nie jest konfiguracja produkcyjna.
+`postgres-roles.sh` przekazuje hasła tylko do jednorazowego `psql`. Istniejący wolumen używa tego samego kroku.
+
+Skrypt nie kasuje danych i nie zmienia nazwy dotychczasowego superusera. `POSTGRES_USER` zostaje kontem administracyjnym bazy. Aplikacja dostaje `POSTGRES_APP_USER` przez `compose.prod.yaml`.
+
+Backend nie dostaje całego pliku `.env`. Dostaje tylko zmienne wypisane w `compose.yaml`. Hasło migracji, repozytorium restic i webhook alertu nie wchodzą do działającego procesu. Produkcja używa `compose.prod.yaml`: `POPMES_ENV=production`, konto `POSTGRES_APP_USER` i brak powrotu do superusera. Migracja jest osobnym poleceniem `bash scripts/migrate.sh`. CI i lokalny development zostają na jednym koncie bazy z `POPMES_ENV=local`.
 
 Kopia i odtworzenie nadal łączą się jako superuser wewnątrz kontenera bazy. To jest potrzebne, żeby `pg_dump` i `pg_restore` widziały cały schemat.
 
@@ -57,15 +57,15 @@ RESTIC_REPOSITORY=s3:https://example.com/popmes
 RESTIC_PASSWORD_FILE=/root/popmes-restic-password
 ```
 
-Plik hasła restic ma leżeć poza repozytorium restic i poza katalogiem `backups/`. `.env` też kopiuje się osobno, nie jako jedyna kopia razem z zaszyfrowanym zrzutem. Bez `RESTIC_REPOSITORY` skrypt kończy lokalną kopię i zapisuje `OFFSITE_STATUS=not_configured`. Nie oznacza to, że kopia poza VM działa.
+Plik hasła restic ma leżeć poza repozytorium restic i poza katalogiem `backups/`. `.env` też kopiuje się osobno, nie jako jedyna kopia razem z zaszyfrowanym zrzutem. Bez `RESTIC_REPOSITORY` skrypt kończy lokalną kopię i zapisuje `OFFSITE_STATUS=not_configured`. Nieudany restic zapisuje status błędu i nie zostawia poprzedniego `ok`. `OFFSITE_SUCCESS` to data ostatniej udanej kopii zewnętrznej. Przy `OFFSITE_REQUIRED=1` monitoring wymaga świeżej kopii zewnętrznej. Zwykły backup wznawia backend przed wysyłką restic. Backup w trakcie `scripts/update.sh` zostawia backend zatrzymany.
 
 Harmonogram jest w `deploy/popmes-backup.cron`. Trzeba go zainstalować na hoście. Nie został zainstalowany na produkcyjnej VM w ramach tej zmiany.
 
-Test odtworzenia w osobnym projekcie Compose, bez ruszania wolumenów `popmes`:
+Dwa różne sprawdzenia kopii. Żadne nie rusza wolumenów projektu `popmes`.
 
-```bash
-bash scripts/backup-restore-test.sh
-```
+`bash scripts/backup-restore-test.sh` odtwarza najnowszą kopię z `--no-owner` i `--no-acl`. To test zawartości. Nie dowodzi, że produkcyjne role i uprawnienia wrócą.
+
+`bash scripts/backup-restore-full.sh` tworzy `popmes_migrate` i `popmes_app`, zapisuje zamówienie, stan i grafikę, robi zrzut, odtwarza go w drugiej izolowanej bazie i uruchamia aplikację na koncie aplikacji. Sprawdza odczyt, zapis, pobranie grafiki oraz odmowę tworzenia tabel, ról i baz.
 
 Odtworzenie na działającą instalację jest ręczne i kasuje bieżące dane:
 
@@ -83,7 +83,7 @@ Nie podnosi głównej wersji PostgreSQL. Nie robi automatycznego restore.
 bash scripts/update.sh <tag-albo-commit> --verified
 ```
 
-`--verified` oznacza, że wymagane sprawdzenia GitHub dla tej rewizji są zielone. Skrypt:
+`--verified` sprawdza przez `gh` wyniki `quality` i `application` dla dokładnego SHA. Brak `gh`, oczekujące testy albo błąd kończą aktualizację. Skrypt:
 
 1. Przerywa, gdy drzewo ma lokalne zmiany, brakuje `.env` albo `DEBUG=1`.
 2. Blokuje drugą aktualizację plikiem `.update.lock`.
@@ -131,6 +131,36 @@ Te ustawienia trzeba włączyć w GitHubie (Settings → Rules → Rulesets, ga�
 - wymagane sprawdzenia `quality` i `application`,
 - blokada force push i usuwania gałęzi,
 - brak pomijania sprawdzeń dla administratorów.
+
+## Grafika po rezerwacji
+
+Nowa wersja etykiety nie zmienia partii już zarezerwowanych albo wyprodukowanych. Zatwierdzenie zapisuje nową grafikę i zostawia wcześniejsze opakowania. Przy zatwierdzaniu operator może jawnie rozliczyć je do magazynu przy ich grafice; historia raportów zostaje. Wysyłka rozchoduje tylko partie zgodne z zatwierdzoną etykietą. Raport dostaje tę etykietę; przy kilku różnych grafikach pole etykiety zostaje puste.
+
+## Przestrzenie robocze
+
+Przestrzeń ogranicza zamówienia, zadania, raporty i grafiki wewnątrz jednej organizacji. To nie jest osobna firma. Szczegóły i ponowienie zapisu z kluczem idempotencji też sprawdzają przestrzeń.
+
+## Logowanie za proxy
+
+Gunicorn ufa `X-Real-IP` tylko wtedy, gdy łączy się z nim prywatny proxy. Nginx na porcie aplikacji nadpisuje ten nagłówek adresem, który sam widzi. Wariant Caddy przekazuje adres klienta, bo do Nginx sięga wtedy wyłącznie Caddy. Limit to 10 prób na konto i 30 na adres w ciągu minuty, liczone atomowo w bazie.
+
+## Przejście istniejącej instalacji
+
+```bash
+git fetch origin
+bash scripts/update.sh <sha-z-zielonym-CI> --verified
+```
+
+SHA musi mieć zaliczone `quality` i `application`. Potem, jeśli włączasz ograniczone role:
+
+```bash
+# dopisz POSTGRES_APP_* i POSTGRES_MIGRATE_* do .env
+bash scripts/postgres-roles.sh
+# ustaw POPMES_ENV=production i USE_HTTPS według VM
+bash scripts/update.sh <nowy-sha> --verified
+```
+
+Na VM trzeba: włączyć `compose.prod.yaml` przez `POPMES_ENV=production`, uruchomić role, ustawić restic i cron, jeśli mają działać. Samo zielone CI tego nie robi.
 
 ## Czego nie sprawdzono na produkcji
 

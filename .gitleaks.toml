@@ -1,0 +1,23 @@
+title = "POPMES"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fixtures that are not production secrets"
+paths = [
+  '''.github/workflows/ci\.yml''',
+  '''scripts/test-backend-env\.sh''',
+  '''scripts/test-ops\.sh''',
+  '''scripts/backup-restore-full\.sh''',
+  '''scripts/role_restore_exercise\.py''',
+]
+regexTarget = "line"
+regexes = [
+  '''CI-local-test-password''',
+  '''app-secret-not-printed''',
+  '''migrate-secret-not-printed''',
+  '''local-test-key''',
+  '''local-test-db''',
+  '''local-test-admin''',
+]

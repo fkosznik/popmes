@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Restore the newest local backup into a separate Compose project.
-# Removes only that project's containers and volumes. Does not touch the
-# running popmes project or its data.
+# Content check of the newest local backup in a separate Compose project.
+# Uses --no-owner and --no-acl, so it does not prove that a production
+# restore keeps roles and privileges. That drill is backup-restore-full.sh.
+# Removes only this project's containers and volumes. Does not touch popmes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 project="${RESTORE_PROJECT:-popmesrestoretest}"
@@ -39,9 +40,10 @@ services:
 EOF
 docker compose -p "$project" -f "$tmp/compose.yaml" up -d --wait
 docker compose -p "$project" -f "$tmp/compose.yaml" exec -T database \
-  sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --exit-on-error' \
+  sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl --exit-on-error' \
   < "$backup_path/database.dump"
 docker compose -p "$project" -f "$tmp/compose.yaml" exec -T database \
   psql -U popmes -d popmes -c "SELECT COUNT(*) FROM django_migrations;"
-echo "Isolated restore check passed for ${backup_path}."
+echo "Content-only restore check passed for ${backup_path}."
+echo "This used --no-owner and --no-acl. It is not a production restore."
 echo "Media from that backup was not loaded into the main application."

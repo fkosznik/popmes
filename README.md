@@ -102,8 +102,11 @@ Odtwarzanie na tę samą instalację **zastępuje** bazę i grafiki. Zapisy zrob
 
 ```bash
 bash scripts/backup-restore-test.sh
+bash scripts/backup-restore-full.sh
 bash scripts/restore.sh /pelna/sciezka/do/kopii --replace-current-data
 ```
+
+`backup-restore-test.sh` sprawdza tylko zawartość (`--no-owner --no-acl`). Pełne role sprawdza `backup-restore-full.sh`. Żaden z nich nie kasuje wolumenów działającej instalacji.
 
 Nie usuwaj wolumenów poleceniem `docker compose down -v` w działającej instalacji. Nie podnoś w ten sposób głównej wersji PostgreSQL.
 

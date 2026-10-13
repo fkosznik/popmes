@@ -1,29 +1,34 @@
 #!/usr/bin/env bash
-# Apply Django migrations as the migration role when it is configured.
-# The long-running backend does not receive this password.
+# Apply migrations as the migration role. The long-running backend never
+# receives that password. Bootstrap then runs as the application role.
 set -euo pipefail
-cd "$(dirname "$0")/.."
-if [ ! -f .env ]; then
-  echo "Missing .env." >&2
-  exit 1
-fi
-set -a
 # shellcheck disable=SC1091
-source .env
-set +a
+source "$(dirname "$0")/ops-common.sh"
+ops_root
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+compose_args
 user="${POSTGRES_MIGRATE_USER:-}"
 password="${POSTGRES_MIGRATE_PASSWORD:-}"
-if [ -z "$user" ]; then
-  echo "POSTGRES_MIGRATE_USER is unset. Migrating with the backend database user."
-  docker compose run --rm --no-deps --entrypoint python backend manage.py migrate --noinput
-  exit 0
-fi
-if [ -z "$password" ]; then
-  echo "Set POSTGRES_MIGRATE_PASSWORD before migrating as ${user}." >&2
+if [ "${POPMES_ENV:-local}" = "production" ] && { [ -z "$user" ] || [ -z "$password" ]; }; then
+  echo "Production refuses to migrate as the application superuser. Set POSTGRES_MIGRATE_USER and POSTGRES_MIGRATE_PASSWORD." >&2
   exit 1
 fi
-echo "Migrating as ${user}."
-docker compose run --rm --no-deps --entrypoint python \
-  -e POSTGRES_USER="$user" \
-  -e POSTGRES_PASSWORD="$password" \
-  backend manage.py migrate --noinput
+if [ -n "$user" ]; then
+  echo "Migrating as ${user}."
+  docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps --entrypoint python \
+    -e POSTGRES_USER="$user" \
+    -e POSTGRES_PASSWORD="$password" \
+    -e POPMES_ENV=local \
+    backend manage.py migrate --noinput
+else
+  echo "Local/CI migration uses the backend database user."
+  docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps --entrypoint python \
+    backend manage.py migrate --noinput
+fi
+docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps --entrypoint python \
+  backend manage.py bootstrap

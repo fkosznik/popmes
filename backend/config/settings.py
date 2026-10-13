@@ -7,6 +7,27 @@ DEBUG = os.environ.get("DEBUG", "0") == "1"
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
 if not SECRET_KEY:
     raise ImproperlyConfigured("Set DJANGO_SECRET_KEY (see .env.example).")
+POPMES_ENV = os.environ.get("POPMES_ENV", "local")
+if POPMES_ENV == "production":
+    leaked = [
+        name
+        for name in (
+            "POSTGRES_MIGRATE_PASSWORD",
+            "POSTGRES_MIGRATE_USER",
+            "RESTIC_REPOSITORY",
+            "RESTIC_PASSWORD_FILE",
+            "ALERT_WEBHOOK_URL",
+        )
+        if os.environ.get(name)
+    ]
+    if leaked:
+        raise ImproperlyConfigured(
+            "The application process must not receive migration, backup or alert secrets."
+        )
+    if not os.environ.get("POSTGRES_USER") or not os.environ.get("POSTGRES_PASSWORD"):
+        raise ImproperlyConfigured(
+            "Production must set the restricted application database role."
+        )
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 CSRF_TRUSTED_ORIGINS = [
     s for s in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if s
