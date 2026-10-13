@@ -11,15 +11,24 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 from django.db import connection
 
+from django.db.migrations.executor import MigrationExecutor
+
 tables = set(connection.introspection.table_names())
-need = os.environ.get("MIGRATE_ON_START") == "1" or "django_migrations" not in tables
-raise SystemExit(0 if need else 2)
+if "django_migrations" not in tables or os.environ.get("MIGRATE_ON_START") == "1":
+    raise SystemExit(0)
+executor = MigrationExecutor(connection)
+if executor.migration_plan(executor.loader.graph.leaf_nodes()):
+    raise SystemExit(3)
+raise SystemExit(2)
 PY
 status=$?
 set -e
 if [ "$status" -eq 0 ]; then
   python manage.py migrate --noinput
   python manage.py bootstrap
+elif [ "$status" -eq 3 ]; then
+  echo "The database is behind this version. Run: bash scripts/migrate.sh" >&2
+  exit 1
 elif [ "$status" -ne 2 ]; then
   exit "$status"
 fi

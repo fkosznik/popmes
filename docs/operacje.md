@@ -11,7 +11,7 @@ python3 scripts/setup.py
 docker compose up -d --build
 ```
 
-Pusty wolumen bazy sam wykonuje migracje i tworzy konto administratora. Hasło jest tylko w `.env`. Zwykły restart kontenerów nie uruchamia migracji ponownie.
+Pusty wolumen bazy sam wykonuje migracje i tworzy konto administratora. Migracja `0012` dodaje partie grafiki, a `0014` przenosi istniejący niezerowy zapas produktów z logo do partii o nieznanej grafice. Nie zeruje go i nie przypisuje go automatycznie do nowych zamówień. Hasło jest tylko w `.env`. Zwykły restart kontenerów nie uruchamia migracji ponownie.
 
 Lokalny development zostaje po HTTP na `127.0.0.1:8080`. Backend i PostgreSQL nie publikują portów na hoście.
 

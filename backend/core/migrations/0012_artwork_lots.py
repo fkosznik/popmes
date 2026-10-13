@@ -49,6 +49,8 @@ def separate_legacy_logo_stock(apps, schema_editor):
         system=True, defaults={"name": "Produkty", "position": 0}
     )
     for stock in StockItem.objects.filter(variant_id__isnull=False).iterator():
+        if stock.artwork_unknown:
+            continue
         variant = Variant.objects.get(pk=stock.variant_id)
         if not variant.custom_label or (stock.quantity == 0 and stock.reserved == 0):
             continue
@@ -59,12 +61,14 @@ def separate_legacy_logo_stock(apps, schema_editor):
         for item in Item.objects.filter(variant_id=variant.pk, custom_label=True):
             if item.allocated == 0 and item.produced == 0 and item.packed == 0:
                 continue
-            ItemLot.objects.create(
+            ItemLot.objects.get_or_create(
                 item_id=item.pk,
                 stock_id=stock.pk,
-                allocated=item.allocated,
-                produced=item.produced,
-                packed=item.packed,
+                defaults={
+                    "allocated": item.allocated,
+                    "produced": item.produced,
+                    "packed": item.packed,
+                },
             )
 
     for variant in Variant.objects.all().iterator():
@@ -194,5 +198,4 @@ class Migration(migrations.Migration):
             model_name='itemlot',
             constraint=models.CheckConstraint(condition=models.Q(('packed__lte', django.db.models.expressions.CombinedExpression(models.F('allocated'), '+', models.F('produced')))), name='lot_packed_lte_ready'),
         ),
-        migrations.RunPython(separate_legacy_logo_stock, migrations.RunPython.noop),
     ]
