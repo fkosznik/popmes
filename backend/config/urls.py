@@ -3,6 +3,7 @@ from core import views as v
 
 urlpatterns = [
     path("api/health/", v.health),
+    path("api/version/", v.version),
     path("api/auth/me/", v.me),
     path("api/auth/login/", v.sign_in),
     path("api/auth/logout/", v.sign_out),

@@ -303,6 +303,15 @@ small {
 .sidebar-note svg {
   color: #c3a0c9;
 }
+.app-version {
+  margin: 12px 3px 0;
+  color: #8d849c;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+html[data-mode="dark"] .app-version {
+  color: #a39cb0;
+}
 .user {
   border-top: 1px solid #ffffff12;
   display: flex;

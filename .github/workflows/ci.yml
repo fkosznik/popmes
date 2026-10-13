@@ -43,6 +43,7 @@ jobs:
         run: |
           bash scripts/test-ops.sh
           python3 scripts/test-backend-env.sh
+          bash scripts/check-version.sh
   application:
     runs-on: ubuntu-latest
     timeout-minutes: 35

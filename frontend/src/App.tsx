@@ -359,7 +359,8 @@ type Focus =
 export default function App() {
   const [user, setUser] = useState<User | null>(null),
     [boot, setBoot] = useState(true),
-    [state, setState] = useState<State | null>(null);
+    [state, setState] = useState<State | null>(null),
+    [appVersion, setAppVersion] = useState<string | null>(null);
   const [page, setPage] = useState("dashboard"),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState("all"),
@@ -451,6 +452,22 @@ export default function App() {
       .catch((e) => setError(errorText(e)))
       .finally(() => setBoot(false));
   }, []);
+  useEffect(() => {
+    if (!user) return;
+    let cancel = false;
+    api<{ version?: string }>("version/")
+      .then((data) => {
+        if (cancel) return;
+        const value = (data.version || "").trim();
+        setAppVersion(/^\d+\.\d+\.\d+$/.test(value) ? value : null);
+      })
+      .catch(() => {
+        if (!cancel) setAppVersion(null);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [user?.id]);
   useEffect(() => {
     setOrdersOffset(0);
   }, [query, filter, orderSort, page]);
@@ -1182,6 +1199,7 @@ export default function App() {
             <LogOut size={17} />
           </button>
         </div>
+        {appVersion && <p className="app-version">POPMES {appVersion}</p>}
       </aside>
       <main>
         <header className="topbar">

@@ -83,6 +83,8 @@ Nie podnosi głównej wersji PostgreSQL. Nie robi automatycznego restore.
 bash scripts/update.sh <tag-albo-commit> --verified
 ```
 
+Tag, na przykład `v0.1.0`, jest zamieniany na commit. GitHub Release sam nie aktualizuje VM. Skrypt robi to dopiero na hoście i tylko wtedy, gdy kontrole `quality` i `application` dla tego commita są zielone.
+
 `--verified` sprawdza przez `gh` wyniki `quality` i `application` dla dokładnego SHA. Brak `gh`, oczekujące testy albo błąd kończą aktualizację. Skrypt:
 
 1. Przerywa, gdy drzewo ma lokalne zmiany, brakuje `.env` albo `DEBUG=1`.

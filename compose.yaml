@@ -24,7 +24,9 @@ services:
       timeout: 5s
       retries: 20
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
       POPMES_ENV: ${POPMES_ENV:-local}

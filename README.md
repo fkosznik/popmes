@@ -2,7 +2,7 @@
 
 **Production Operations Platform – Manufacturing Execution System** dla POPME.
 
-Aplikacja webowa po polsku: **zamówienie → produkcja gotowych opakowań w sztukach → wysyłka przesyłki do klienta**. Backend Python/Django + Django REST Framework, interfejs TypeScript/React, PostgreSQL, Docker Compose.
+Aplikacja webowa po polsku: **zamówienie → produkcja gotowych opakowań w sztukach → wysyłka przesyłki do klienta**. Backend Python/Django + Django REST Framework, interfejs TypeScript/React, PostgreSQL, Docker Compose. Numer wersji jest w pliku `VERSION`; po zalogowaniu widać go na dole menu. Historia wydań: [CHANGELOG.md](CHANGELOG.md).
 
 ## Uruchomienie
 

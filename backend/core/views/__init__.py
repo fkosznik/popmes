@@ -3,6 +3,7 @@
 __all__ = [
     "LoginThrottle",
     "health",
+    "version",
     "me",
     "sign_in",
     "sign_out",
@@ -42,6 +43,7 @@ __all__ = [
 
 from core.views.auth import LoginThrottle
 from core.views.auth import health
+from core.views.auth import version
 from core.views.auth import me
 from core.views.auth import sign_in
 from core.views.auth import sign_out

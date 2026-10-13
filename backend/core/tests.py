@@ -30,6 +30,15 @@ from . import services as s
 
 
 class FlowTests(TestCase):
+    def test_version_endpoint_matches_the_shipped_file(self):
+        from core.version import app_version
+
+        anonymous = APIClient()
+        response = anonymous.get("/api/version/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(set(response.json()), {"version"})
+        self.assertEqual(response.json()["version"], app_version())
+        self.assertRegex(response.json()["version"], r"^\d+\.\d+\.\d+$")
     def setUp(self):
         self.admin = get_user_model().objects.create_superuser(
             "admin", password="Test-password-123!"

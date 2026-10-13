@@ -107,6 +107,15 @@ def enforce_login_limits(request, username):
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+def version(request):
+    from core.version import app_version
+
+    return Response({"version": app_version()})
+
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
 def health(request):
     with connection.cursor() as cursor:
         cursor.execute("SELECT 1")

@@ -179,3 +179,29 @@ test("grafika przy pozycji z logo", async ({ page }) => {
   const drawer = page.getByRole("region", { name: "Szczegóły zamówienia" });
   await expect(drawer.getByText(/logo.png/).first()).toBeVisible();
 });
+
+test("menu pokazuje wersję z API", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByLabel("Login", { exact: true })
+    .fill(process.env.POP_TEST_USER || "admin");
+  await page
+    .getByLabel("Hasło", { exact: true })
+    .fill(process.env.POP_TEST_PASSWORD || "Local-test-Only-925!");
+  await page.getByRole("button", { name: "Zaloguj się" }).click();
+  await expect(page.getByText("POPMES 0.1.0")).toBeVisible();
+});
+
+test("błąd pobrania wersji nie blokuje logowania", async ({ page }) => {
+  await page.route("**/api/version/", (route) => route.abort());
+  await page.goto("/");
+  await page
+    .getByLabel("Login", { exact: true })
+    .fill(process.env.POP_TEST_USER || "admin");
+  await page
+    .getByLabel("Hasło", { exact: true })
+    .fill(process.env.POP_TEST_PASSWORD || "Local-test-Only-925!");
+  await page.getByRole("button", { name: "Zaloguj się" }).click();
+  await expect(page.getByRole("heading", { name: /Cześć/ })).toBeVisible();
+  await expect(page.getByText(/^POPMES \d/)).toHaveCount(0);
+});

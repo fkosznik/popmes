@@ -1,0 +1,13 @@
+name: Release tag
+on:
+  push:
+    tags:
+      - "v*"
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches VERSION
+        run: bash scripts/check-version.sh
