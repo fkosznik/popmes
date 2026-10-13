@@ -2,8 +2,19 @@
 
 import hashlib
 from decimal import Decimal, InvalidOperation
-from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Max, Q, Sum
+from django.db.models import (
+    Case,
+    Exists,
+    F,
+    IntegerField,
+    Max,
+    OuterRef,
+    Q,
+    Subquery,
+    Sum,
+    Value,
+    When,
+)
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from .models import (
@@ -75,6 +86,48 @@ def workspace_q(space, prefix=""):
 def workspace_filter(user, prefix=""):
     space = current_workspace(user)
     return workspace_q(space, prefix), space
+
+
+def order_visible(user, order_id):
+    order_q, _space = workspace_filter(user)
+    return Order.objects.filter(order_q, pk=order_id).exists()
+
+
+def assert_receipt_workspace(user, path, response):
+    import re
+
+    order_id = None
+    match = re.search(r"/api/(?:orders|tasks|reports|labels|items)/(\d+)", path)
+    if "/api/orders/" in path and match:
+        order_id = int(match.group(1))
+    elif "/api/tasks/" in path and match:
+        order_id = (
+            Task.objects.filter(pk=int(match.group(1)))
+            .values_list("order_id", flat=True)
+            .first()
+        )
+    elif "/api/reports/" in path and match:
+        order_id = (
+            Report.objects.filter(pk=int(match.group(1)))
+            .values_list("task__order_id", flat=True)
+            .first()
+        )
+    elif "/api/labels/" in path and match:
+        order_id = (
+            Label.objects.filter(pk=int(match.group(1)))
+            .values_list("item__order_id", flat=True)
+            .first()
+        )
+    elif "/api/items/" in path and match:
+        order_id = (
+            Item.objects.filter(pk=int(match.group(1)))
+            .values_list("order_id", flat=True)
+            .first()
+        )
+    elif path.endswith("/orders/save/") and isinstance(response, dict):
+        order_id = response.get("id")
+    if order_id and not order_visible(user, order_id):
+        raise PermissionDenied("To zamówienie jest w innej przestrzeni.")
 
 
 def roles(user):
@@ -1661,151 +1714,140 @@ def set_stock_quantity(item_id, quantity, user, why):
     return stock
 
 
-STATUS_LABELS = {
-    "pl": {
-        "draft": "Szkic",
-        "producing": "W trakcie produkcji",
-        "awaiting_shipment": "Czeka na wysyłkę",
-        "completed": "Zrealizowane",
-        "issued": "Wydane",
-        "cancelled": "Anulowane",
-    },
-    "en": {
-        "draft": "Draft",
-        "producing": "In production",
-        "awaiting_shipment": "Ready to ship",
-        "completed": "Completed",
-        "issued": "Issued",
-        "cancelled": "Cancelled",
-    },
-}
-
-
-def visible_orders(user):
+def annotated_orders(user):
     order_q, _space = workspace_filter(user)
-    return (
-        Order.objects.select_related("customer")
-        .prefetch_related("items__labels", "tasks")
-        .filter(order_q)
-        .order_by("-id")
+    items = Item.objects.filter(order=OuterRef("pk"))
+    return Order.objects.filter(order_q).annotate(
+        has_item=Exists(items),
+        unfinished=Exists(items.filter(packed__lt=F("quantity"))),
+        needs_production=Exists(
+            items.filter(quantity__gt=F("allocated") + F("produced"))
+        ),
+        item_quantity=Sum("items__quantity"),
+        item_packed=Sum("items__packed"),
+        item_allocated=Sum("items__allocated"),
+        item_produced=Sum("items__produced"),
     )
 
 
-def summarize_orders(orders):
-    active = overdue = production_remaining = packing_remaining = 0
-    now = timezone.now()
-    for order in orders:
-        current = status(order)
-        if current in ("draft", "issued", "cancelled", "completed"):
-            continue
-        active += 1
-        if order.due_at and order.due_at < now:
-            overdue += 1
-        for item in order.items.all():
-            production_remaining += to_produce(item)
-            packing_remaining += max(0, item.quantity - item.packed)
+def status_filter_q(name):
+    closed = Q(cancelled_at__isnull=True, issued_at__isnull=True)
+    confirmed = closed & Q(confirmed_at__isnull=False)
+    if name == "cancelled":
+        return Q(cancelled_at__isnull=False)
+    if name == "issued":
+        return Q(cancelled_at__isnull=True, issued_at__isnull=False)
+    if name == "draft":
+        return closed & Q(confirmed_at__isnull=True)
+    if name == "completed":
+        return confirmed & Q(has_item=True, unfinished=False)
+    if name == "producing":
+        return confirmed & Q(needs_production=True)
+    if name == "awaiting_shipment":
+        return confirmed & Q(needs_production=False) & (Q(unfinished=True) | Q(has_item=False))
+    if name == "late":
+        return (status_filter_q("producing") | status_filter_q("awaiting_shipment")) & Q(
+            due_at__lt=timezone.now()
+        )
+    return Q()
+
+
+def order_summary_from_query(qs):
+    active_q = status_filter_q("producing") | status_filter_q("awaiting_shipment")
+    active_ids = qs.filter(active_q).values("pk")
+    totals = Item.objects.filter(order_id__in=active_ids).aggregate(
+        production=Sum(F("quantity") - F("allocated") - F("produced")),
+        packing=Sum(F("quantity") - F("packed")),
+    )
     return {
-        "orders": len(orders),
-        "active": active,
-        "overdue": overdue,
-        "production_remaining": production_remaining,
-        "packing_remaining": packing_remaining,
+        "orders": qs.values("pk").distinct().count(),
+        "active": qs.filter(active_q).values("pk").distinct().count(),
+        "overdue": qs.filter(active_q, due_at__lt=timezone.now()).values("pk").distinct().count(),
+        "production_remaining": int(totals["production"] or 0),
+        "packing_remaining": int(totals["packing"] or 0),
     }
 
 
-def customer_label(order):
-    if order.customer_id and order.customer.name:
-        return order.customer.name
-    return (order.customer_snapshot or {}).get("name") or "Bez klienta"
-
-
-def order_matches(order, text, status_filter):
-    current = status(order)
-    if status_filter == "late":
-        if current in ("draft", "issued", "cancelled", "completed"):
-            return False
-        if not order.due_at or order.due_at >= timezone.now():
-            return False
-    elif status_filter not in ("", "all") and current != status_filter:
-        return False
-    if not text:
-        return True
-    blob = " ".join(
-        [order.number, customer_label(order), *(item.name for item in order.items.all())]
-    ).casefold()
-    return text.casefold() in blob
-
-
-def sort_orders(orders, key, direction, lang):
-    labels = STATUS_LABELS.get(lang, STATUS_LABELS["pl"])
-    desc = direction == "desc"
-
-    def value(order):
-        if key == "due":
-            if order.due_at is None:
-                return (1, 0)
-            stamp = order.due_at.timestamp()
-            return (0, -stamp if desc else stamp)
-        if key == "progress":
-            units = sum(item.quantity for item in order.items.all())
-            packed = sum(item.packed for item in order.items.all())
-            ratio = packed / units if units else 0
-            return (ratio, packed)
-        if key == "status":
-            current = status(order)
-            if order.hold_reason:
-                return "wstrzymane" if lang != "en" else "on hold"
-            return labels.get(current, current).casefold()
-        if key == "flavor":
-            return " · ".join(
-                f"{item.product_name} {grams_label(item.weight_g)} g"
-                for item in order.items.all()
-            ).casefold()
-        return customer_label(order).casefold()
-
-    rows = sorted(orders, key=value)
-    if desc and key != "due":
-        rows.reverse()
-    return rows
+def load_order_page(ids):
+    if not ids:
+        return []
+    found = {
+        order.pk: order
+        for order in Order.objects.select_related("customer")
+        .prefetch_related("items__labels", "tasks")
+        .filter(pk__in=ids)
+    }
+    return [found[pk] for pk in ids if pk in found]
 
 
 def select_orders(user, params):
-    """Page of orders plus totals for the whole workspace, not the page."""
-    rows = list(visible_orders(user))
-    summary = summarize_orders(rows)
+    """One database page, with totals for the whole workspace."""
+    qs = annotated_orders(user)
+    summary = order_summary_from_query(qs)
     scope = params.get("orders_scope") or "page"
     if scope == "none":
         return [], summary, {"limit": 0, "offset": 0, "count": summary["orders"]}
     if scope == "upcoming":
-        open_rows = [
-            order
-            for order in rows
-            if status(order) not in ("draft", "issued", "cancelled", "completed")
-        ]
-        open_rows.sort(key=lambda order: (order.due_at is None, order.due_at or timezone.now()))
-        return open_rows[:6], summary, {
+        active_q = status_filter_q("producing") | status_filter_q("awaiting_shipment")
+        upcoming = qs.filter(active_q).order_by(F("due_at").asc(nulls_last=True), "id")
+        ids = list(upcoming.values_list("pk", flat=True)[:6])
+        return load_order_page(ids), summary, {
             "limit": 6,
             "offset": 0,
-            "count": len(open_rows),
+            "count": upcoming.count(),
         }
     text = str(params.get("orders_q") or "").strip()
-    status_filter = str(params.get("orders_status") or "all")
-    matched = [order for order in rows if order_matches(order, text, status_filter)]
+    status_name = str(params.get("orders_status") or "all")
+    if status_name not in ("", "all"):
+        qs = qs.filter(status_filter_q(status_name))
+    if text:
+        qs = qs.filter(
+            Q(customer__name__icontains=text) | Q(items__name__icontains=text)
+        ).distinct()
     key = params.get("orders_sort") or ""
     direction = "desc" if params.get("orders_dir") == "desc" else "asc"
-    try:
-        lang = "en" if user.profile.language == "en" else "pl"
-    except ObjectDoesNotExist:
-        lang = "pl"
-    if key in ("customer", "flavor", "due", "progress", "status"):
-        matched = sort_orders(matched, key, direction, lang)
+    if key == "due":
+        ordering = [F("due_at").desc(nulls_last=True) if direction == "desc" else F("due_at").asc(nulls_last=True), "id"]
+    elif key == "customer":
+        ordering = ["-customer__name" if direction == "desc" else "customer__name", "id"]
+    elif key == "progress":
+        sign = "-" if direction == "desc" else ""
+        qs = qs.annotate(
+            progress=Case(
+                When(item_quantity__gt=0, then=F("item_packed") * 1000 / F("item_quantity")),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+        ordering = [f"{sign}progress", "id"]
+    elif key == "status":
+        qs = qs.annotate(
+            status_rank=Case(
+                When(cancelled_at__isnull=False, then=Value(5)),
+                When(issued_at__isnull=False, then=Value(4)),
+                When(confirmed_at__isnull=True, then=Value(0)),
+                When(needs_production=True, then=Value(1)),
+                When(unfinished=False, has_item=True, then=Value(3)),
+                default=Value(2),
+                output_field=IntegerField(),
+            )
+        )
+        ordering = ["-status_rank" if direction == "desc" else "status_rank", "id"]
+    elif key == "flavor":
+        flavor = Item.objects.filter(order=OuterRef("pk")).order_by("id").values("product_name")[:1]
+        qs = qs.annotate(flavor_name=Subquery(flavor))
+        ordering = ["-flavor_name" if direction == "desc" else "flavor_name", "id"]
+    else:
+        ordering = ["-id"]
     try:
         limit = min(100, max(1, int(params.get("orders_limit") or 50)))
         offset = max(0, int(params.get("orders_offset") or 0))
     except (TypeError, ValueError):
         limit, offset = 50, 0
-    return matched[offset:offset + limit], summary, {
+    count = qs.count()
+    ids = list(qs.order_by(*ordering).values_list("pk", flat=True)[offset:offset + limit])
+    return load_order_page(ids), summary, {
         "limit": limit,
         "offset": offset,
-        "count": len(matched),
+        "count": count,
     }

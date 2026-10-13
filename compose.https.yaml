@@ -3,6 +3,8 @@
 services:
   frontend:
     ports: !reset []
+    volumes:
+      - ./frontend/nginx.caddy.conf:/etc/nginx/conf.d/default.conf:ro
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped

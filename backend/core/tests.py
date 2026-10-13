@@ -6,6 +6,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from unittest import skipUnless
+from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.db import connection, connections, transaction
@@ -836,12 +837,12 @@ class FlowTests(TestCase):
         self.post(f"labels/{red}/approve/")
         self.assertEqual(second.items.get().allocated, 5)
         blue = self.upload(second.items.get(), "blue")
-        blocked = self.post(f"labels/{blue}/approve/", expected=400)
-        self.assertIn("wcześniejsz", blocked.content.decode().lower())
+        self.post(f"labels/{blue}/approve/")
         self.assertEqual(second.items.get().allocated, 5)
         red_lot = StockItem.objects.get(artwork_version=1, artwork_unknown=False)
         self.assertEqual((red_lot.quantity, red_lot.reserved), (10, 5))
-        self.post(f"orders/{second.pk}/ship/", expected=400)
+        blocked = self.post(f"orders/{second.pk}/ship/", expected=400)
+        self.assertIn("grafik", blocked.content.decode().lower())
         red_lot.refresh_from_db()
         self.assertEqual((red_lot.quantity, red_lot.reserved), (10, 5))
         self.post(f"labels/{blue}/approve/", {"settle_previous": True})
@@ -1387,6 +1388,73 @@ class FlowTests(TestCase):
         )
         self.post("workspaces/current/", {"id": created.data["id"]}, expected=404)
 
+    def test_other_workspace_cannot_read_or_replay_an_order(self):
+        order = self.order(3)
+        home = self.client.get("/api/state/?orders_scope=none").json()
+        primary = next(item["id"] for item in home["workspaces"] if item["primary"])
+        created = self.post("workspaces/", {"name": "Inna hala"})
+        key = uuid.uuid4()
+        self.post(f"orders/{order.pk}/hold/", {"reason": "Blokada"}, key)
+        self.post("workspaces/current/", {"id": created.data["id"]})
+        self.assertEqual(self.client.get(f"/api/orders/{order.pk}/").status_code, 404)
+        self.post(f"orders/{order.pk}/cancel/", {"reason": "Cudze"}, expected=403)
+        self.post(f"orders/{order.pk}/hold/", {"reason": "Blokada"}, key, expected=403)
+        self.post("workspaces/current/", {"id": primary})
+        self.assertEqual(self.client.get(f"/api/orders/{order.pk}/").status_code, 200)
+
+    def test_proxy_clients_do_not_share_a_login_limit_and_spoofing_fails(self):
+        os_limits = patch.dict(
+            "os.environ", {"LOGIN_IP_LIMIT": "30", "LOGIN_ACCOUNT_LIMIT": "10"}
+        )
+        os_limits.start()
+        self.addCleanup(os_limits.stop)
+
+        def attempt(ip, username, remote="172.18.0.8"):
+            return self.client.post(
+                "/api/auth/login/",
+                {"username": username, "password": "wrong-password"},
+                format="json",
+                REMOTE_ADDR=remote,
+                HTTP_X_REAL_IP=ip,
+                HTTP_X_FORWARDED_FOR="198.51.100.9",
+            )
+
+        for _ in range(10):
+            self.assertEqual(attempt("203.0.113.10", "one-user").status_code, 400)
+        self.assertEqual(attempt("203.0.113.10", "one-user").status_code, 429)
+        self.assertEqual(attempt("203.0.113.11", "other-user").status_code, 400)
+        for index in range(30):
+            self.assertEqual(
+                attempt(
+                    f"198.51.100.{index + 1}",
+                    f"person-{index}",
+                    remote="8.8.8.8",
+                ).status_code,
+                400,
+            )
+        blocked = attempt("198.51.100.200", "person-extra", remote="8.8.8.8")
+        self.assertEqual(blocked.status_code, 429)
+        self.assertIn("ponownie", blocked.content.decode().lower())
+
+    def test_order_page_is_limited_in_the_database(self):
+        from django.test.utils import CaptureQueriesContext
+
+        for _ in range(3):
+            self.order(2)
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get("/api/state/?orders_scope=page&orders_limit=1&orders_sort=due&orders_dir=asc")
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(len(body["orders"]), 1)
+        self.assertGreaterEqual(body["summary"]["orders"], 3)
+        self.assertGreaterEqual(body["orders_page"]["count"], 3)
+        limited = [
+            query["sql"]
+            for query in ctx.captured_queries
+            if " LIMIT " in query["sql"].upper()
+        ]
+        self.assertTrue(limited)
+
 
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks required")
 class ConcurrencyTests(TransactionTestCase):
@@ -1501,3 +1569,30 @@ class ConcurrencyTests(TransactionTestCase):
         self.assertEqual(sorted(results), [200, 400])
         item.refresh_from_db()
         self.assertEqual(item.produced, 10)
+
+    def test_parallel_login_attempts_cannot_slip_past_the_limit(self):
+        os_limits = patch.dict(
+            "os.environ", {"LOGIN_IP_LIMIT": "30", "LOGIN_ACCOUNT_LIMIT": "10"}
+        )
+        os_limits.start()
+        self.addCleanup(os_limits.stop)
+
+        def once(_number):
+            connections.close_all()
+            try:
+                client = APIClient()
+                return client.post(
+                    "/api/auth/login/",
+                    {"username": "parallel-user", "password": "wrong-password"},
+                    format="json",
+                    REMOTE_ADDR="172.18.0.12",
+                    HTTP_X_REAL_IP="203.0.113.80",
+                ).status_code
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            statuses = list(executor.map(once, range(16)))
+        self.assertLessEqual(statuses.count(400), 10)
+        self.assertGreaterEqual(statuses.count(429), 6)
+        self.assertEqual(statuses.count(400) + statuses.count(429), 16)

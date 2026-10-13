@@ -1,68 +1,30 @@
-import hashlib
 import io
 import json
-import uuid
-from datetime import timedelta
-from functools import wraps
 from pathlib import Path
-from django.contrib.auth import (
-    authenticate,
-    get_user_model,
-    login,
-    logout,
-    update_session_auth_hash,
-)
-from django.contrib.auth.models import Group
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import validate_email
-from django.db import transaction, connection, IntegrityError
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
-from rest_framework.authentication import SessionAuthentication
-from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.fields import DateTimeField
-from rest_framework.throttling import BaseThrottle
 from PIL import Image
 from pypdf import PdfReader
 from ..models import (
-    Product,
     Variant,
     Customer,
     Order,
     Item,
     Task,
-    Batch,
     Report,
     Label,
-    LoginAttempt,
-    RequestReceipt,
-    Profile,
-    StockItem,
-    Supplier,
-    Workspace,
 )
 from django.db.models import Max
-from ..serializers import ProductSerializer, VariantSerializer, CustomerSerializer
 from .. import services as s
 from ..presentation import (
-    user_data,
-    task_data,
     order_data,
     report_data,
-    batch_data,
     shipment_data,
-    stock_data,
-    stock_profile,
-    category_data,
-    supplier_data,
-    organization_data,
-    workspaces_data,
 )
 
 
@@ -174,7 +136,8 @@ def save_order(request):
 @api_view(["GET"])
 def detail(request, pk):
     s.permit(request.user, "sales", "manager", "packing")
-    order = get_object_or_404(Order, pk=pk)
+    order_q, _space = s.workspace_filter(request.user)
+    order = get_object_or_404(Order.objects.filter(order_q), pk=pk)
     result = order_data(order)
     result["events"] = [
         {
@@ -210,6 +173,8 @@ def order_action(request, pk, action):
     else:
         allowed = ["manager"]
     s.permit(request.user, *allowed)
+    if not s.order_visible(request.user, pk):
+        raise PermissionDenied("To zamówienie jest w innej przestrzeni.")
     order = locked_order(pk)
     if action == "confirm":
         s.confirm(order, request.user)
@@ -268,6 +233,8 @@ def order_action(request, pk, action):
 @mutation
 def task_action(request, pk, action):
     initial = get_object_or_404(Task, pk=pk)
+    if not s.order_visible(request.user, initial.order_id):
+        raise PermissionDenied("To zamówienie jest w innej przestrzeni.")
     order = locked_order(initial.order_id)
     task = Task.objects.select_related("item", "product").get(pk=pk)
     task.order = order
@@ -318,6 +285,8 @@ def task_action(request, pk, action):
 def correction(request, pk):
     s.permit(request.user, "manager")
     report = get_object_or_404(Report.objects.select_related("task"), pk=pk)
+    if not s.order_visible(request.user, report.task.order_id):
+        raise PermissionDenied("To zamówienie jest w innej przestrzeni.")
     order = locked_order(report.task.order_id)
     report = Report.objects.select_related("task__item").get(pk=pk)
     report.task.order = order
@@ -352,6 +321,8 @@ def validate_file(upload):
 def upload_label(request, pk):
     s.permit(request.user, "sales", "manager")
     item = get_object_or_404(Item, pk=pk)
+    if not s.order_visible(request.user, item.order_id):
+        raise PermissionDenied("To zamówienie jest w innej przestrzeni.")
     order = locked_order(item.order_id)
     s.ensure_open(order)
     upload = request.FILES.get("file")
@@ -385,16 +356,14 @@ def upload_label(request, pk):
 def approve_label(request, pk):
     s.permit(request.user, "sales", "manager")
     label = get_object_or_404(Label.objects.select_related("item"), pk=pk)
+    if not s.order_visible(request.user, label.item.order_id):
+        raise PermissionDenied("To zamówienie jest w innej przestrzeni.")
     order = locked_order(label.item.order_id)
     s.ensure_open(order)
     if s.latest_label(label.item).pk != pk:
         raise ValidationError("Zatwierdź najnowszą wersję etykiety.")
-    if s.conflicting_holds(label.item, label):
-        if request.data.get("settle_previous") is not True:
-            raise ValidationError(
-                "To zamówienie ma zarezerwowane albo wyprodukowane opakowania wcześniejszej grafiki. "
-                "Nowa etykieta ich nie zmienia. Rozlicz wcześniejszy zapas jawnym zatwierdzeniem."
-            )
+    # A new approval does not retag packs already held. Shipping rejects them.
+    if request.data.get("settle_previous") is True:
         s.settle_previous_artwork(label.item, label, request.user)
         label.item.refresh_from_db()
     label.approved_at = timezone.now()
@@ -415,7 +384,9 @@ def approve_label(request, pk):
 @api_view(["GET"])
 def download_label(request, pk):
     s.permit(request.user, "sales", "production", "packing", "manager")
-    label = get_object_or_404(Label, pk=pk)
+    label = get_object_or_404(Label.objects.select_related("item"), pk=pk)
+    if not s.order_visible(request.user, label.item.order_id):
+        raise PermissionDenied("To zamówienie jest w innej przestrzeni.")
     response = FileResponse(
         label.file.open("rb"),
         as_attachment=True,

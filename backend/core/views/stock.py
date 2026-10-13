@@ -1,72 +1,17 @@
-import hashlib
-import io
-import json
-import uuid
-from datetime import timedelta
-from functools import wraps
-from pathlib import Path
-from django.contrib.auth import (
-    authenticate,
-    get_user_model,
-    login,
-    logout,
-    update_session_auth_hash,
-)
-from django.contrib.auth.models import Group
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import validate_email
-from django.db import transaction, connection, IntegrityError
-from django.http import FileResponse
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
-from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
-from rest_framework.authentication import SessionAuthentication
-from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
-from rest_framework.fields import DateTimeField
-from rest_framework.throttling import BaseThrottle
-from PIL import Image
-from pypdf import PdfReader
 from ..models import (
-    Product,
-    Variant,
-    Customer,
-    Order,
-    Item,
-    Task,
-    Batch,
-    Report,
-    Label,
-    LoginAttempt,
-    RequestReceipt,
-    Profile,
     StockItem,
     Supplier,
-    Workspace,
 )
-from django.db.models import Max
-from ..serializers import ProductSerializer, VariantSerializer, CustomerSerializer
 from .. import services as s
 from ..presentation import (
-    user_data,
-    task_data,
-    order_data,
-    report_data,
-    batch_data,
-    shipment_data,
-    stock_data,
     stock_profile,
-    category_data,
-    supplier_data,
-    organization_data,
-    workspaces_data,
 )
 
 
-from core.views.auth import locked_order, mutation
+from core.views.auth import mutation
 
 @api_view(["POST"])
 @mutation

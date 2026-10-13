@@ -80,6 +80,7 @@ class Order(models.Model):
             models.Index(fields=["due_at"], name="order_due_at"),
             models.Index(fields=["confirmed_at"], name="order_confirmed_at"),
             models.Index(fields=["cancelled_at", "issued_at"], name="order_open_flags"),
+            models.Index(fields=["workspace", "due_at", "id"], name="order_workspace_due"),
         ]
 
     @property
@@ -454,6 +455,14 @@ class LoginAttempt(models.Model):
         indexes = [
             models.Index(fields=["ident", "created_at"], name="login_attempt_window"),
         ]
+
+
+class LoginBucket(models.Model):
+    """One counter per address or account, locked while a login attempt is recorded."""
+
+    ident = models.CharField(max_length=80, unique=True)
+    window_start = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
 
 
 class Organization(models.Model):

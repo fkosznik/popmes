@@ -1,6 +1,6 @@
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
-from .models import Batch, Profile, Workspace
+from .models import Batch, Workspace
 from .services import (
     status,
     roles,

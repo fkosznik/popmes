@@ -1,4 +1,45 @@
 """HTTP handlers grouped by area. Domain rules stay in services."""
+
+__all__ = [
+    "LoginThrottle",
+    "health",
+    "me",
+    "sign_in",
+    "sign_out",
+    "mutation",
+    "locked_order",
+    "shell_settings",
+    "state",
+    "catalog",
+    "save_order",
+    "detail",
+    "order_action",
+    "task_action",
+    "correction",
+    "validate_file",
+    "upload_label",
+    "approve_label",
+    "download_label",
+    "stock_action",
+    "account_update",
+    "account_password",
+    "users",
+    "save_user",
+    "organization_update",
+    "workspace_save",
+    "workspace_select",
+    "set_stock",
+    "stock_category",
+    "stock_product",
+    "supplier_create",
+    "stock_supplier",
+    "stock_detail",
+    "stock_edit",
+    "supplier_update",
+    "recipe_save",
+    "stock_receipt",
+]
+
 from core.views.auth import LoginThrottle
 from core.views.auth import health
 from core.views.auth import me

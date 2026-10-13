@@ -3075,10 +3075,8 @@ export default function App() {
                             i.label!.version > 1 &&
                             uncovered > 0 &&
                             window.confirm(
-                              "Zamówienie ma już opakowania poprzedniej grafiki. Rozliczyć je do magazynu i zatwierdzić nową etykietę? Wcześniejsze opakowania zostaną w magazynie przy swojej grafice.",
+                              "Zamówienie ma opakowania poprzedniej grafiki. Rozliczyć je do magazynu przy ich grafice? Anuluj zostawia je na zamówieniu: nowa etykieta ich nie zmienia i nie zostaną wysłane jako nowa grafika.",
                             );
-                          if (i.label!.version > 1 && uncovered > 0 && !settle)
-                            return;
                           action(
                             `labels/${i.label!.id}/approve/`,
                             settle ? { settle_previous: true } : {},

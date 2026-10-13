@@ -2,5 +2,9 @@
     encode zstd gzip
     # This host only. Do not add includeSubDomains.
     header Strict-Transport-Security "max-age=15552000"
-    reverse_proxy frontend:80
+    reverse_proxy frontend:80 {
+        # Caddy saw this client. Nginx keeps that address only as its own peer address
+        # and does not trust a header the visitor added.
+        header_up X-Forwarded-For {remote_host}
+    }
 }
