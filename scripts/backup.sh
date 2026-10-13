@@ -41,8 +41,13 @@ mkdir -p "$backup_root"
 chmod 700 "$backup_root"
 require_positive_int BACKUP_KEEP "${BACKUP_KEEP:-14}"
 keep="${BACKUP_KEEP:-14}"
-backup_target="$backup_root/$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir "$backup_target"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_target="$backup_root/$stamp"
+# Two backups in the same second must not share a directory.
+if ! mkdir "$backup_target" 2>/dev/null; then
+  backup_target="$backup_root/${stamp}-$$"
+  mkdir "$backup_target"
+fi
 chmod 700 "$backup_target"
 mark_offsite() {
   printf '%s\n' "$1" > "$backup_root/OFFSITE_STATUS"
