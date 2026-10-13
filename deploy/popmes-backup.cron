@@ -1,0 +1,5 @@
+# Install on the VM, not inside the database container.
+# 0 2 * * * cd /srv/popmes && bash scripts/backup.sh >> /var/log/popmes-backup.log 2>&1
+# 30 2 * * * cd /srv/popmes && bash scripts/backup-restore-test.sh >> /var/log/popmes-restore-test.log 2>&1
+# 15 * * * * cd /srv/popmes && bash scripts/monitor.sh >> /var/log/popmes-monitor.log 2>&1
+# 20 3 * * * cd /srv/popmes && docker compose exec -T backend python manage.py purge_technical >> /var/log/popmes-purge.log 2>&1

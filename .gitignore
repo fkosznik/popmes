@@ -11,6 +11,7 @@ dist/
 *.tsbuildinfo
 backend/media/
 backups/
+updates/
 coverage/
 playwright-report/
 test-results/

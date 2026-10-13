@@ -1,4 +1,6 @@
 {$DOMAIN} {
     encode zstd gzip
+    # This host only. Do not add includeSubDomains.
+    header Strict-Transport-Security "max-age=15552000"
     reverse_proxy frontend:80
 }

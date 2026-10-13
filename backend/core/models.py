@@ -75,6 +75,13 @@ class Order(models.Model):
         related_name="orders",
     )
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["due_at"], name="order_due_at"),
+            models.Index(fields=["confirmed_at"], name="order_confirmed_at"),
+            models.Index(fields=["cancelled_at", "issued_at"], name="order_open_flags"),
+        ]
+
     @property
     def number(self):
         return f"ZAM-{timezone.localtime(self.created_at).year}-{self.pk:05d}"
@@ -282,6 +289,11 @@ class Event(models.Model):
     action = models.CharField(max_length=100)
     detail = models.JSONField(default=dict)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["order", "-id"], name="event_order_recent"),
+        ]
+
 
 class StockCategory(models.Model):
     name = models.CharField(max_length=80, unique=True)
@@ -426,6 +438,23 @@ class StockMove(models.Model):
     )
     created_at = models.DateTimeField(default=timezone.now)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["item", "-id"], name="stock_move_item_recent"),
+        ]
+
+
+class LoginAttempt(models.Model):
+    """Shared login counter. The value is a hash of the client address, not a password."""
+
+    ident = models.CharField(max_length=64)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["ident", "created_at"], name="login_attempt_window"),
+        ]
+
 
 class Organization(models.Model):
     name = models.CharField(max_length=80, default="POPME")
@@ -479,4 +508,7 @@ class RequestReceipt(models.Model):
             models.UniqueConstraint(
                 fields=["user", "key"], name="unique_request_per_user"
             )
+        ]
+        indexes = [
+            models.Index(fields=["created_at"], name="request_receipt_created"),
         ]
