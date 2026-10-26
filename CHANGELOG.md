@@ -11,6 +11,7 @@ Kolejne zmiany trafiają tutaj, zanim dostaną numer wydania.
 - Zgłoszenie produkcji może być mniejsze albo większe niż ilość na zamówieniu. Nadwyżka trafia do magazynu i nie jest zarezerwowana pod to zamówienie.
 - Magazyn sortuje się po nazwie, gramaturze, stanie, dostępnej ilości i dostawcy.
 - Przyjęcie towaru szuka produktu po nazwie lub kodzie.
+- Pillow i pypdf są podniesione do wersji bez zgłoszonych podatności z audytu zależności.
 
 Aktualizacja istniejącej instalacji, po zielonych kontrolach `quality` i `application` dla tego commita:
 
