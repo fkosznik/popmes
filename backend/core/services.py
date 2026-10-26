@@ -418,10 +418,10 @@ def production_report(task, user, data):
     ensure_task(task)
     item = locked_item(task)
     units = integer(data.get("units"), "Liczba opakowań")
-    if units > to_produce(item):
-        raise ValidationError(
-            "Liczba przekracza pozostałe opakowania do wyprodukowania."
-        )
+    # The order keeps its quantity. Packs beyond it stay in the warehouse,
+    # unreserved, so another order can use them.
+    for_order = min(units, to_produce(item))
+    surplus = units - for_order
     report = Report.objects.create(
         task=task,
         user=user,
@@ -429,9 +429,12 @@ def production_report(task, user, data):
         label=approved_label(item),
         note=str(data.get("note", ""))[:4000],
     )
-    item.produced += units
-    item.save(update_fields=["produced"])
-    add_finished(item, units, user, report, "Produkcja opakowań")
+    if for_order:
+        item.produced += for_order
+        item.save(update_fields=["produced"])
+        add_finished(item, for_order, user, report, "Produkcja opakowań")
+    if surplus:
+        add_free_finished(item, surplus, user, report, "Nadwyżka produkcji")
     consume_recipe(item.variant, units, user, report)
     task.started_at = task.started_at or timezone.now()
     task.save(update_fields=["started_at"])
@@ -442,6 +445,8 @@ def production_report(task, user, data):
         "Zgłoszono opakowania",
         report_id=report.pk,
         units=units,
+        for_order=for_order,
+        surplus=surplus,
         item=item.name,
     )
     return report
@@ -612,12 +617,20 @@ def reverse_report(report, user, data):
     if task.kind == "production":
         if report.units and task.item_id:
             item = locked_item(task)
-            if item.allocated + item.produced - report.units < item.packed:
+            order_units = sum(
+                int(move.reserved_delta)
+                for move in StockMove.objects.filter(
+                    report=report, delta__gt=0, reserved_delta__gt=0
+                )
+            )
+            if order_units > item.produced:
+                raise ValidationError("Raport nie pasuje do wyprodukowanej ilości.")
+            if item.allocated + item.produced - order_units < item.packed:
                 raise ValidationError(
                     "Najpierw cofnij wysyłkę tych opakowań."
                 )
             reverse_custom_holds(item, report)
-            item.produced -= report.units
+            item.produced -= order_units
             item.save(update_fields=["produced"])
             reverse_stock(report, user, "Korekta produkcji: " + why)
         elif report.batch_id:
@@ -1037,6 +1050,18 @@ def add_finished(item, units, user, report, reason):
     return adjust_variant(item.variant, units, units, user, reason, report)
 
 
+def add_free_finished(item, units, user, report, reason):
+    """Put packs that exceed the order into stock without reserving them."""
+    if item.custom_label:
+        label = approved_label(item)
+        if label is None:
+            raise ValidationError("Zatwierdź etykietę przed produkcją.")
+        stock = artwork_stock_locked(item.variant, label)
+        record_move(stock, units, 0, user, reason, report)
+        return stock
+    return adjust_variant(item.variant, units, 0, user, reason, report)
+
+
 def hold_matches_label(hold, label):
     stock = hold.stock
     if stock.artwork_unknown or label is None or not label.content_sha256:
@@ -1188,6 +1213,8 @@ def reverse_custom_holds(item, report):
             .first()
         )
         if hold is None:
+            if move.delta > 0 and move.reserved_delta == 0:
+                continue
             raise ValidationError("Korekta nie znajduje partii etykiety.")
         if move.delta > 0 and hold.produced < int(move.delta):
             raise ValidationError(
@@ -1466,7 +1493,9 @@ def reverse_stock(report, user, reason):
 
 
 def stock_rows():
-    return StockItem.objects.select_related("category", "supplier", "label").order_by(
+    return StockItem.objects.select_related(
+        "category", "supplier", "label", "variant"
+    ).order_by(
         "category__position", "position", "name"
     )
 

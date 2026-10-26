@@ -192,6 +192,7 @@ def stock_data(item):
         "artwork_unknown": item.artwork_unknown,
         "supplier_id": item.supplier_id,
         "supplier_name": item.supplier.name if item.supplier_id else "",
+        "weight_g": str(item.variant.weight_g) if item.variant_id else None,
     }
 
 

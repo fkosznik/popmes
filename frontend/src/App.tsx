@@ -156,6 +156,34 @@ function orderStage(
   if (items.some((item) => produceLeft(item) > 0)) return "producing";
   return "awaiting_shipment";
 }
+function sortStock(
+  rows: StockItem[],
+  sort: {
+    key: "name" | "weight" | "quantity" | "available" | "supplier";
+    dir: "asc" | "desc";
+  } | null,
+) {
+  if (!sort) return rows;
+  const direction = sort.dir === "asc" ? 1 : -1;
+  const value = (item: StockItem): string | number | null => {
+    if (sort.key === "name") return item.name.toLocaleLowerCase("pl");
+    if (sort.key === "weight")
+      return item.weight_g == null ? null : Number(item.weight_g);
+    if (sort.key === "quantity") return Number(item.quantity);
+    if (sort.key === "available") return Number(item.available);
+    return item.supplier_name.toLocaleLowerCase("pl");
+  };
+  return [...rows].sort((left, right) => {
+    const a = value(left);
+    const b = value(right);
+    if (a == null && b == null) return left.id - right.id;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    if (a < b) return -direction;
+    if (a > b) return direction;
+    return left.id - right.id;
+  });
+}
 function shipReady(item?: {
   quantity: number;
   allocated?: number;
@@ -383,6 +411,12 @@ export default function App() {
     [mobile, setMobile] = useState(false),
     [users, setUsers] = useState<User[]>([]);
   const [packWeight, setPackWeight] = useState<number | null>(null);
+  const [stockSort, setStockSort] = useState<{
+    key: "name" | "weight" | "quantity" | "available" | "supplier";
+    dir: "asc" | "desc";
+  } | null>(null);
+  const [receiptQuery, setReceiptQuery] = useState("");
+  const [receiptStockId, setReceiptStockId] = useState<number | null>(null);
   const [account, setAccount] = useState<{
     name: string;
     email: string;
@@ -683,6 +717,10 @@ export default function App() {
   function open(m: ModalState) {
     setError("");
     setModal(m);
+    if (m.kind === "receipt") {
+      setReceiptQuery("");
+      setReceiptStockId(null);
+    }
     if (m.kind === "order") {
       setCustomerId(m.order?.customer_id || 0);
       setDeliveryMethod(m.order?.delivery || "courier");
@@ -2172,7 +2210,8 @@ export default function App() {
                         {t.kind === "production" && (t.item?.allocated ?? 0) > 0 && (
                           <p className="instruction">
                             Z magazynu: {fmt.format(t.item?.allocated ?? 0)} opak.
-                            Produkujesz tylko brakującą resztę.
+                            Na zamówieniu brakuje {fmt.format(produceLeft(t.item))}.
+                            Możesz zgłosić mniej albo więcej.
                           </p>
                         )}
                         {isShipping(t.kind) && t.address && (
@@ -2789,12 +2828,15 @@ export default function App() {
                     />
                   </section>
                   {(state.categories || []).map((category) => {
-                    const rows = (state.stock || []).filter(
-                      (item) =>
-                        item.category_id === category.id &&
-                        (item.name + item.code)
-                          .toLowerCase()
-                          .includes(query.toLowerCase()),
+                    const rows = sortStock(
+                      (state.stock || []).filter(
+                        (item) =>
+                          item.category_id === category.id &&
+                          (item.name + item.code)
+                            .toLowerCase()
+                            .includes(query.toLowerCase()),
+                      ),
+                      stockSort,
                     );
                     if (!rows.length && query) return null;
                     return (
@@ -2813,10 +2855,50 @@ export default function App() {
                           <table>
                             <thead>
                               <tr>
-                                <th>Pozycja</th>
-                                <th>Stan</th>
-                                <th>Dostępne</th>
-                                {!category.system && <th>Dostawca</th>}
+                                {(
+                                  [
+                                    ["name", "Pozycja"],
+                                    ["weight", "Gramatura"],
+                                    ["quantity", "Stan"],
+                                    ["available", "Dostępne"],
+                                    ...(!category.system
+                                      ? [["supplier", "Dostawca"] as const]
+                                      : []),
+                                  ] as const
+                                ).map(([key, label]) => (
+                                  <th
+                                    key={key}
+                                    className="sortable"
+                                    aria-sort={
+                                      stockSort?.key === key
+                                        ? stockSort.dir === "asc"
+                                          ? "ascending"
+                                          : "descending"
+                                        : "none"
+                                    }
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setStockSort((current) =>
+                                          !current || current.key !== key
+                                            ? { key, dir: "asc" }
+                                            : current.dir === "asc"
+                                              ? { key, dir: "desc" }
+                                              : null,
+                                        )
+                                      }
+                                    >
+                                      {label}
+                                      {stockSort?.key === key &&
+                                        (stockSort.dir === "asc" ? (
+                                          <ChevronUp size={12} aria-hidden="true" />
+                                        ) : (
+                                          <ChevronDown size={12} aria-hidden="true" />
+                                        ))}
+                                    </button>
+                                  </th>
+                                ))}
                                 {can("manager") && <th />}
                               </tr>
                             </thead>
@@ -2839,6 +2921,11 @@ export default function App() {
                                   <td>
                                     <strong>{item.name}</strong>
                                     <small>{item.code}</small>
+                                  </td>
+                                  <td>
+                                    {item.weight_g
+                                      ? `${fmt.format(Number(item.weight_g))} g`
+                                      : "—"}
                                   </td>
                                   <td>
                                     <strong>
@@ -3012,6 +3099,26 @@ export default function App() {
                   Zmień zamówienie
                 </button>
               )}
+              {can("packing", "manager") &&
+                !["draft", "cancelled", "issued"].includes(detail.status) && (
+                  <button
+                    className="primary"
+                    disabled={
+                      busy ||
+                      !!detail.hold_reason ||
+                      !detail.items.some((item) => item.packed < item.quantity) ||
+                      !detail.items.every(
+                        (item) =>
+                          item.packed >= item.quantity ||
+                          shipReady(item) >= item.quantity - item.packed,
+                      )
+                    }
+                    onClick={() => action(`orders/${detail.id}/ship/`)}
+                  >
+                    <Check />
+                    Wysłano
+                  </button>
+                )}
               {can("sales", "manager") && detail.status === "completed" && (
                 <button
                   className="primary"
@@ -3049,6 +3156,75 @@ export default function App() {
                 </button>
               )}
             </div>
+            {(state?.tasks || []).some(
+              (task) =>
+                task.order_id === detail.id &&
+                task.kind === "production" &&
+                can("production", "manager"),
+            ) && (
+              <>
+                <h3>Produkcja</h3>
+                {(state?.tasks || [])
+                  .filter((task) => task.order_id === detail.id)
+                  .filter(
+                    (task) =>
+                      task.kind === "production" && can("production", "manager"),
+                  )
+                  .map((task) => (
+                    <div className="detail-item" key={task.id}>
+                      <div className="detail-item-top">
+                        <div>
+                          <strong>
+                            {task.kind === "production" ? "Produkcja" : "Wysyłka"}
+                            {" · "}
+                            {task.product_name}
+                          </strong>
+                          <small>
+                            {task.kind === "production"
+                              ? `Pozostało ${fmt.format(produceLeft(task.item))}`
+                              : `Gotowe do wysyłki ${fmt.format(shipReady(task.item))}`}
+                          </small>
+                        </div>
+                        <Badge status={task.status} />
+                      </div>
+                      {task.blockers.length > 0 && (
+                        <div className="task-block">
+                          <CircleAlert size={14} />
+                          {task.blockers.join(" · ")}
+                        </div>
+                      )}
+                      {task.status !== "done" && (
+                        <div className="task-actions">
+                          <button
+                            disabled={busy || (!task.active && task.blockers.length > 0)}
+                            onClick={() =>
+                              action(
+                                `tasks/${task.id}/${task.active ? "pause" : "start"}/`,
+                              )
+                            }
+                          >
+                            {task.active ? "Pauza" : "Rozpocznij"}
+                          </button>
+                          <button
+                            className="primary"
+                            disabled={
+                              busy ||
+                              task.blockers.length > 0 ||
+                              (task.kind === "production" && !task.item)
+                            }
+                            onClick={() => open({ kind: "report", task })}
+                          >
+                            <Check size={16} />
+                            {task.kind === "production"
+                              ? "Zgłoś opakowania"
+                              : "Oznacz jako wysłane"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </>
+            )}
             <h3>Pozycje zamówienia</h3>
             {detail.items.map((i) => (
               <div className="detail-item" key={i.id}>
@@ -3934,9 +4110,13 @@ export default function App() {
                       })),
                   };
                 } else if (modal.kind === "receipt") {
+                  if (!receiptStockId) {
+                    setError("Wybierz produkt z wyników wyszukiwania.");
+                    return;
+                  }
                   path = "stock/receipt/";
                   data = {
-                    stock_id: Number(d.stock_id),
+                    stock_id: receiptStockId,
                     quantity: d.quantity,
                     reason: d.reason,
                   };
@@ -4331,7 +4511,7 @@ export default function App() {
                         step="1"
                         max={
                           modal.task!.kind === "production"
-                            ? Math.max(1, produceLeft(modal.task!.item))
+                            ? undefined
                             : Math.max(1, shipReady(modal.task!.item))
                         }
                         defaultValue={
@@ -4344,7 +4524,7 @@ export default function App() {
                       />
                       <small>
                         {modal.task!.kind === "production"
-                          ? "Tylko brakująca liczba. To, co jest w magazynie, nie wraca na produkcję."
+                          ? "Możesz wpisać mniej albo więcej, niż brakuje na zamówieniu. Nadwyżka trafia do magazynu i nie jest zarezerwowana."
                           : "Tyle gotowych opakowań oznaczasz jako wysłane."}
                       </small>
                       {modal.task!.kind === "production" &&
@@ -4793,24 +4973,70 @@ export default function App() {
               )}
               {modal.kind === "receipt" && (
                 <>
-                  <Field label="Pozycja">
-                    <select name="stock_id" required defaultValue="">
-                      <option value="" disabled>
-                        Wybierz produkt
-                      </option>
-                      {(state?.categories || []).map((category) => (
-                        <optgroup key={category.id} label={category.name}>
-                          {(state?.stock || [])
-                            .filter((item) => item.category_id === category.id)
-                            .map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.name} ({item.unit})
-                              </option>
-                            ))}
-                        </optgroup>
-                      ))}
-                    </select>
+                  <Field label="Szukaj produktu">
+                    <input
+                      value={receiptQuery}
+                      onChange={(e) => setReceiptQuery(e.target.value)}
+                      placeholder="Nazwa lub kod"
+                      autoFocus
+                    />
                   </Field>
+                  <div className="pick-list" role="listbox" aria-label="Wyniki produktów">
+                    {receiptQuery.trim().length < 1 ? (
+                      <p className="form-help">
+                        Wpisz nazwę albo kod. Lista pokaże pasujące pozycje.
+                      </p>
+                    ) : (
+                      (state?.stock || [])
+                        .filter((item) =>
+                          `${item.name} ${item.code}`
+                            .toLowerCase()
+                            .includes(receiptQuery.trim().toLowerCase()),
+                        )
+                        .slice(0, 20)
+                        .map((item) => {
+                          const category = (state?.categories || []).find(
+                            (row) => row.id === item.category_id,
+                          );
+                          return (
+                            <button
+                              type="button"
+                              key={item.id}
+                              role="option"
+                              aria-selected={receiptStockId === item.id}
+                              className={
+                                receiptStockId === item.id ? "selected" : ""
+                              }
+                              onClick={() => setReceiptStockId(item.id)}
+                            >
+                              <strong>{item.name}</strong>
+                              <small>
+                                {item.code}
+                                {category ? ` · ${category.name}` : ""}
+                              </small>
+                            </button>
+                          );
+                        })
+                    )}
+                    {receiptQuery.trim().length > 0 &&
+                      !(state?.stock || []).some((item) =>
+                        `${item.name} ${item.code}`
+                          .toLowerCase()
+                          .includes(receiptQuery.trim().toLowerCase()),
+                      ) && (
+                        <p className="form-help">Brak pozycji o tej nazwie.</p>
+                      )}
+                  </div>
+                  {receiptStockId && (
+                    <p className="form-help">
+                      Wybrano:{" "}
+                      {
+                        (state?.stock || []).find(
+                          (item) => item.id === receiptStockId,
+                        )?.name
+                      }
+                    </p>
+                  )}
                   <Field label="Ilość z dostawy">
                     <input
                       name="quantity"
@@ -5170,7 +5396,16 @@ function CatalogForm({
             <Field label="Adres firmy / rozliczeniowy" wide>
               <textarea name="address" defaultValue={c?.address} />
             </Field>
-            <DeliveryAddresses initial={c?.delivery_addresses || []} />
+            <DeliveryAddresses
+              initial={
+                c?.delivery_addresses?.length
+                  ? c.delivery_addresses
+                  : c
+                    ? []
+                    : [emptyDeliveryAddress()]
+              }
+              requireOne={!c}
+            />
           </>
         )}
       </div>
@@ -5186,25 +5421,39 @@ function CatalogForm({
   );
 }
 
+function emptyDeliveryAddress() {
+  return {
+    id: requestKey(),
+    name: "",
+    address: "",
+    postal_code: "",
+    city: "",
+    street: "",
+    house_number: "",
+    apartment: "",
+  };
+}
+
 function DeliveryAddresses({
   initial,
+  requireOne,
 }: {
   initial: Customer["delivery_addresses"];
+  requireOne: boolean;
 }) {
   const [addresses, setAddresses] = useState(initial);
+  const update = (id: string, field: string, value: string) =>
+    setAddresses(
+      addresses.map((row) => (row.id === id ? { ...row, [field]: value } : row)),
+    );
   return (
     <div className="wide">
       <div className="form-section-head">
-        <h3>Adresy dostawy / sklepy</h3>
+        <h3>Adresy dostawy</h3>
         <button
           type="button"
           className="text-button"
-          onClick={() =>
-            setAddresses([
-              ...addresses,
-              { id: requestKey(), name: "", address: "" },
-            ])
-          }
+          onClick={() => setAddresses([...addresses, emptyDeliveryAddress()])}
         >
           Dodaj adres dostawy
         </button>
@@ -5218,39 +5467,60 @@ function DeliveryAddresses({
         <div key={a.id} className="form-grid">
           <Field label={`Nazwa lokalizacji ${index + 1}`}>
             <input
-              required
               value={a.name}
-              onChange={(e) =>
-                setAddresses(
-                  addresses.map((x) =>
-                    x.id === a.id ? { ...x, name: e.target.value } : x,
-                  ),
-                )
-              }
+              onChange={(e) => update(a.id, "name", e.target.value)}
             />
           </Field>
-          <Field label={`Adres dostawy ${index + 1}`}>
-            <textarea
+          <Field label={`Kod pocztowy ${index + 1}`}>
+            <input
               required
-              value={a.address}
-              onChange={(e) =>
-                setAddresses(
-                  addresses.map((x) =>
-                    x.id === a.id ? { ...x, address: e.target.value } : x,
-                  ),
-                )
-              }
+              value={a.postal_code || ""}
+              onChange={(e) => update(a.id, "postal_code", e.target.value)}
             />
           </Field>
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => setAddresses(addresses.filter((x) => x.id !== a.id))}
-          >
-            Usuń lokalizację {index + 1}
-          </button>
+          <Field label={`Miasto ${index + 1}`}>
+            <input
+              required
+              value={a.city || ""}
+              onChange={(e) => update(a.id, "city", e.target.value)}
+            />
+          </Field>
+          <Field label={`Ulica ${index + 1}`}>
+            <input
+              required
+              value={a.street || ""}
+              onChange={(e) => update(a.id, "street", e.target.value)}
+            />
+          </Field>
+          <Field label={`Numer domu ${index + 1}`}>
+            <input
+              required
+              value={a.house_number || ""}
+              onChange={(e) => update(a.id, "house_number", e.target.value)}
+            />
+          </Field>
+          <Field label={`Numer lokalu ${index + 1}`}>
+            <input
+              value={a.apartment || ""}
+              onChange={(e) => update(a.id, "apartment", e.target.value)}
+            />
+          </Field>
+          {!(requireOne && addresses.length === 1) && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={() =>
+                setAddresses(addresses.filter((row) => row.id !== a.id))
+              }
+            >
+              Usuń lokalizację {index + 1}
+            </button>
+          )}
         </div>
       ))}
+      {addresses.length === 0 && (
+        <p className="form-help">Dodaj co najmniej jeden adres dostawy.</p>
+      )}
     </div>
   );
 }

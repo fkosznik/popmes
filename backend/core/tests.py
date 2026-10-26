@@ -25,6 +25,7 @@ from .models import (
     WorkSession,
     Correction,
     Label,
+    StockItem,
 )
 from . import services as s
 
@@ -131,6 +132,26 @@ class FlowTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(s.status(order), "issued")
         self.post(f"tasks/{p.pk}/report/", {"units": 1}, expected=400)
+
+    def test_production_accepts_more_or_less_than_the_order(self):
+        order = self.order(10)
+        production, _shipping = self.tasks(order)
+        self.post(f"tasks/{production.pk}/report/", {"units": 4})
+        item = order.items.get()
+        self.assertEqual(item.produced, 4)
+        self.post(f"tasks/{production.pk}/report/", {"units": 9})
+        item.refresh_from_db()
+        self.assertEqual(item.produced, 10)
+        stock = StockItem.objects.get(
+            variant=self.variant, artwork_sha256="", artwork_unknown=False
+        )
+        self.assertEqual((stock.quantity, stock.reserved), (13, 10))
+        report_id = Report.objects.filter(task=production).latest("id").pk
+        self.post(f"reports/{report_id}/correct/", {"reason": "Za dużo"})
+        item.refresh_from_db()
+        stock.refresh_from_db()
+        self.assertEqual(item.produced, 4)
+        self.assertEqual((stock.quantity, stock.reserved), (4, 4))
 
     def test_flavor_grouping_and_frozen_snapshot(self):
         variant2 = Variant.objects.create(
@@ -350,6 +371,45 @@ class FlowTests(TestCase):
         )
         self.assertEqual(r.status_code, 400)
         self.assertFalse(Label.objects.exists())
+
+    def test_new_customer_needs_a_split_delivery_address(self):
+        self.post("catalog/customers/", {"name": "Bez adresu"}, expected=400)
+        self.post(
+            "catalog/customers/",
+            {
+                "name": "Bez numeru domu",
+                "delivery_addresses": [
+                    {
+                        "id": "bad",
+                        "postal_code": "61-001",
+                        "city": "Poznań",
+                        "street": "Testowa",
+                    }
+                ],
+            },
+            expected=400,
+        )
+        created = self.post(
+            "catalog/customers/",
+            {
+                "name": "Z adresem",
+                "delivery_addresses": [
+                    {
+                        "id": "shop",
+                        "name": "Sklep",
+                        "postal_code": "61-001",
+                        "city": "Poznań",
+                        "street": "Testowa",
+                        "house_number": "1",
+                        "apartment": "2",
+                    }
+                ],
+            },
+        )
+        customer = Customer.objects.get(pk=created.data["id"])
+        address = customer.delivery_addresses[0]
+        self.assertEqual(address["apartment"], "2")
+        self.assertEqual(address["address"], "Testowa 1/2, 61-001 Poznań")
 
     def test_active_customer_addresses_and_order_snapshot(self):
         addresses = [
@@ -603,17 +663,18 @@ class FlowTests(TestCase):
         item = order.items.get()
         self.assertEqual(item.allocated, 7)
         production, shipping = self.tasks(order)
-        self.post(f"tasks/{production.pk}/report/", {"units": 4}, expected=400)
-        self.post(f"tasks/{production.pk}/report/", {"units": 3})
+        self.post(f"tasks/{production.pk}/report/", {"units": 4})
+        item.refresh_from_db()
         stock.refresh_from_db()
-        self.assertEqual(stock.quantity, Decimal("10"))
+        self.assertEqual(item.produced, 3)
+        self.assertEqual(stock.quantity, Decimal("11"))
         self.assertEqual(stock.reserved, Decimal("10"))
         second = self.order(5)
-        self.assertEqual(second.items.get().allocated, 0)
+        self.assertEqual(second.items.get().allocated, 1)
         self.post(f"orders/{order.pk}/cancel/", {"reason": "Rezygnacja"})
         stock.refresh_from_db()
         second.items.get().refresh_from_db()
-        self.assertEqual(stock.quantity, Decimal("10"))
+        self.assertEqual(stock.quantity, Decimal("11"))
         self.assertEqual(second.items.get().allocated, 5)
         self.assertEqual(stock.reserved, Decimal("5"))
         category = self.post("stock/categories/", {"name": "Dodatki"}).data["id"]

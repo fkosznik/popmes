@@ -4,6 +4,20 @@
 
 Kolejne zmiany trafiają tutaj, zanim dostaną numer wydania.
 
+## 0.1.1 — 2026-10-26
+
+- Z otwartego zamówienia, także z przeglądu, można zgłosić produkcję i oznaczyć wysyłkę. Nie trzeba najpierw wchodzić w zakładki Produkcja ani Wysyłka.
+- Nowy klient wymaga adresu dostawy. Adres jest rozbity na kod pocztowy, miasto, ulicę i numer domu. Numer lokalu jest opcjonalny. Adresy zapisane wcześniej jedną linijką nadal działają.
+- Zgłoszenie produkcji może być mniejsze albo większe niż ilość na zamówieniu. Nadwyżka trafia do magazynu i nie jest zarezerwowana pod to zamówienie.
+- Magazyn sortuje się po nazwie, gramaturze, stanie, dostępnej ilości i dostawcy.
+- Przyjęcie towaru szuka produktu po nazwie lub kodzie.
+
+Aktualizacja istniejącej instalacji, po zielonych kontrolach `quality` i `application` dla tego commita:
+
+```bash
+bash scripts/update.sh v0.1.1 --verified
+```
+
 ## 0.1.0 — 2026-10-13
 
 Pierwsze wydanie POPMES. Aplikacja jest na wczesnym etapie: obsługuje codzienną pracę przy zamówieniach, produkcji gotowych opakowań i wysyłce, ale nie jest deklarowana jako w pełni stabilna.
@@ -36,7 +50,7 @@ Skrypt przyjmuje tag, bo `git fetch --tags` i `rev-parse` zamieniają go na comm
 
 Źródłem numeru jest plik `VERSION` w katalogu głównym. `frontend/package.json` ma tę samą wartość; po zmianie `VERSION` uruchom `bash scripts/sync-version.sh`.
 
-- `0.1.1` — poprawki błędów;
+- `0.1.2` — poprawki błędów;
 - `0.2.0` — kolejny zestaw funkcji;
 - zmień `VERSION`, zsynchronizuj package.json, dopisz changelog, uruchom testy, scal zmiany do `main` i poczekaj na zielone kontrole dokładnego commita;
 - utwórz tag `vX.Y.Z` wskazujący ten commit i opublikuj GitHub Release;

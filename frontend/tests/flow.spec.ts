@@ -18,29 +18,30 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   await page.screenshot({ path: "/tmp/popmes-dashboard.png", fullPage: true });
   await page.getByRole("button", { name: "Klienci", exact: true }).click();
   await page.getByRole("button", { name: "Dodaj klienta" }).click();
-  await page.getByLabel("Nazwa", { exact: true }).fill("E2E · " + Date.now());
-  await page
-    .getByRole("button", { name: "Dodaj adres dostawy", exact: true })
-    .click();
+  const customerName = "E2E · " + Date.now();
+  await page.getByLabel("Nazwa", { exact: true }).fill(customerName);
   await page
     .getByLabel("Nazwa lokalizacji 1", { exact: true })
     .fill("Sklep Poznań");
-  await page
-    .getByLabel("Adres dostawy 1", { exact: true })
-    .fill("Testowa 1, Poznań");
+  await page.getByLabel("Kod pocztowy 1").fill("61-001");
+  await page.getByLabel("Miasto 1").fill("Poznań");
+  await page.getByLabel("Ulica 1").fill("Testowa");
+  await page.getByLabel("Numer domu 1").fill("1");
   await page
     .getByRole("button", { name: "Dodaj adres dostawy", exact: true })
     .click();
   await page
     .getByLabel("Nazwa lokalizacji 2", { exact: true })
     .fill("Sklep Gorzów");
-  await page
-    .getByLabel("Adres dostawy 2", { exact: true })
-    .fill("Testowa 2, Gorzów");
+  await page.getByLabel("Kod pocztowy 2").fill("66-400");
+  await page.getByLabel("Miasto 2").fill("Gorzów");
+  await page.getByLabel("Ulica 2").fill("Testowa");
+  await page.getByLabel("Numer domu 2").fill("2");
   await page
     .getByRole("button", { name: "Zapisz zmiany", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(page.getByText(customerName)).toBeVisible();
   await page
     .getByRole("button", { name: "Zamówienia", exact: false })
     .first()
@@ -49,8 +50,7 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   const clientOption = await page
     .getByRole("combobox", { name: "Klient", exact: true })
     .locator("option")
-    .filter({ hasText: "E2E ·" })
-    .last()
+    .filter({ hasText: customerName })
     .getAttribute("value");
   await page
     .getByRole("combobox", { name: "Klient", exact: true })
@@ -76,7 +76,10 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
     .click();
   await expect(page.getByRole("dialog")).toBeHidden();
   const drawer = page.getByRole("region", { name: "Szczegóły zamówienia" });
-  await expect(drawer.getByText(/Testowa 2, Gorzów/)).toBeVisible();
+  await expect(drawer.getByText(/Testowa 2, 66-400 Gorzów/)).toBeVisible();
+  await expect(
+    drawer.getByRole("button", { name: "Zgłoś opakowania" }),
+  ).toBeVisible();
   const number = await drawer.locator("h2").textContent();
   await page.getByRole("button", { name: "Zamknij szczegóły" }).click();
   await page.getByRole("button", { name: "Produkcja", exact: true }).click();
@@ -93,7 +96,7 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   await page.getByRole("button", { name: "Wysyłka", exact: true }).click();
   const pack = page.locator(".task-card").filter({ hasText: number! });
   await expect(pack.getByText("10 szt.")).toBeVisible();
-  await expect(pack.getByText("Testowa 2, Gorzów")).toBeVisible();
+  await expect(pack.getByText(/Testowa 2, 66-400 Gorzów/)).toBeVisible();
   await expect(pack.getByRole("button", { name: "Rozpocznij" })).toHaveCount(0);
   await expect(pack.getByRole("button", { name: "Wysłano" })).toBeDisabled();
   await expect(pack.getByText("Czeka na produkcję")).toBeVisible();
@@ -189,7 +192,7 @@ test("menu pokazuje wersję z API", async ({ page }) => {
     .getByLabel("Hasło", { exact: true })
     .fill(process.env.POP_TEST_PASSWORD || "Local-test-Only-925!");
   await page.getByRole("button", { name: "Zaloguj się" }).click();
-  await expect(page.getByText("POPMES 0.1.0")).toBeVisible();
+  await expect(page.getByText("POPMES 0.1.1")).toBeVisible();
 });
 
 test("błąd pobrania wersji nie blokuje logowania", async ({ page }) => {

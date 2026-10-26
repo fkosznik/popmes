@@ -49,7 +49,16 @@ export type Variant = {
   recipe: { stock_id: number; quantity: string }[];
 };
 export type Customer = {
-  delivery_addresses: { id: string; name: string; address: string }[];
+  delivery_addresses: {
+    id: string;
+    name: string;
+    address: string;
+    postal_code?: string;
+    city?: string;
+    street?: string;
+    house_number?: string;
+    apartment?: string;
+  }[];
   id: number;
   name: string;
   contact: string;
@@ -215,6 +224,7 @@ export type StockItem = {
   artwork_unknown: boolean;
   supplier_id: number | null;
   supplier_name: string;
+  weight_g: string | null;
 };
 export type StockMoveRow = {
   id: number;
