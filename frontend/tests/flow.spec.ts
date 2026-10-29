@@ -82,7 +82,7 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   ).toBeVisible();
   const number = await drawer.locator("h2").textContent();
   await page.getByRole("button", { name: "Zamknij szczegóły" }).click();
-  await page.getByRole("button", { name: "Produkcja", exact: true }).click();
+  await page.getByRole("button", { name: /^Produkcja/ }).click();
   const prod = page.locator(".task-card").filter({ hasText: number! });
   await prod.getByRole("button", { name: "Rozpocznij", exact: true }).click();
   await expect(prod.getByRole("button", { name: "Pauza" })).toBeVisible();
@@ -93,7 +93,7 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   await page.getByLabel("Wyprodukowane opakowania", { exact: true }).fill("5");
   await page.getByRole("button", { name: "Zapisz wykonanie" }).click();
   await expect(page.getByRole("dialog")).toBeHidden();
-  await page.getByRole("button", { name: "Wysyłka", exact: true }).click();
+  await page.getByRole("button", { name: /^Wysyłka/ }).click();
   const pack = page.locator(".task-card").filter({ hasText: number! });
   await expect(pack.getByText("10 szt.")).toBeVisible();
   await expect(pack.getByText(/Testowa 2, 66-400 Gorzów/)).toBeVisible();
@@ -103,12 +103,12 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   await pack.getByRole("button", { name: "Więcej szczegółów" }).click();
   await expect(drawer.getByText(number!)).toBeVisible();
   await page.getByRole("button", { name: "Zamknij szczegóły" }).click();
-  await page.getByRole("button", { name: "Produkcja", exact: true }).click();
+  await page.getByRole("button", { name: /^Produkcja/ }).click();
   await prod.getByRole("button", { name: "Zgłoś opakowania" }).click();
   await page.getByLabel("Wyprodukowane opakowania", { exact: true }).fill("5");
   await page.getByRole("button", { name: "Zapisz wykonanie" }).click();
   await expect(page.getByRole("dialog")).toBeHidden();
-  await page.getByRole("button", { name: "Wysyłka", exact: true }).click();
+  await page.getByRole("button", { name: /^Wysyłka/ }).click();
   await pack.getByRole("button", { name: "Wysłano" }).click();
   await expect(pack).toHaveCount(0);
   await page
@@ -123,7 +123,7 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   await page.getByRole("button", { name: "Zamknij szczegóły" }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Otwórz menu" }).click();
-  await page.getByRole("button", { name: "Produkcja", exact: true }).click();
+  await page.getByRole("button", { name: /^Produkcja/ }).click();
   await page.screenshot({
     path: "/tmp/popmes-mobile.png",
     fullPage: true,

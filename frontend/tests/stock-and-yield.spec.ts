@@ -33,7 +33,7 @@ test("zgłoszenie produkcji nie ogranicza ilości do zamówienia", async ({
   page,
 }) => {
   await login(page);
-  await page.getByRole("button", { name: "Produkcja", exact: true }).click();
+  await page.getByRole("button", { name: /^Produkcja/ }).click();
   const report = page
     .getByRole("button", { name: "Zgłoś opakowania", disabled: false })
     .first();
