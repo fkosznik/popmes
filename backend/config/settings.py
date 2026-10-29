@@ -128,6 +128,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    "EXCEPTION_HANDLER": "core.errors.api_exception_handler",
     "DEFAULT_THROTTLE_RATES": {"login": "10/min"},
 }
 DATA_UPLOAD_MAX_MEMORY_SIZE = 22 * 1024 * 1024

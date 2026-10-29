@@ -31,6 +31,17 @@ ACCOUNT_ZONES = {
     "Europe/London",
     "UTC",
 }
+ORDER_FILTERS = {
+    "all",
+    "in_progress",
+    "draft",
+    "producing",
+    "awaiting_shipment",
+    "completed",
+    "issued",
+    "cancelled",
+    "late",
+}
 ACCOUNT_PAGES = {
     "dashboard",
     "orders",
@@ -100,11 +111,38 @@ def account_password(request):
     try:
         validate_password(password, user)
     except DjangoValidationError as exc:
-        raise ValidationError(exc.messages)
+        raise ValidationError(polish_password(exc.messages))
     user.set_password(password)
     user.save(update_fields=["password"])
     update_session_auth_hash(getattr(request, "_request", request), user)
     return {"ok": True}
+
+
+def polish_password(messages):
+    translated = []
+    for message in messages:
+        text = str(message)
+        if "too short" in text or "za krótkie" in text:
+            translated.append("Hasło jest za krótkie. Musi mieć co najmniej 10 znaków.")
+        elif "too common" in text or "zbyt powszechne" in text or "popularne" in text:
+            translated.append("To hasło jest zbyt popularne. Wybierz inne.")
+        elif "entirely numeric" in text or "samych cyfr" in text:
+            translated.append("Hasło nie może składać się z samych cyfr.")
+        else:
+            translated.append(text)
+    return translated
+
+
+@api_view(["POST"])
+@mutation
+def orders_filter(request):
+    value = str(request.data.get("orders_filter") or "")
+    if value not in ORDER_FILTERS:
+        raise ValidationError("Wybierz filtr zamówień z listy.")
+    profile, _ = Profile.objects.get_or_create(user=request.user)
+    profile.orders_filter = value
+    profile.save(update_fields=["orders_filter"])
+    return user_data(request.user)
 
 
 

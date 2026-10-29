@@ -192,7 +192,15 @@ test("menu pokazuje wersję z API", async ({ page }) => {
     .getByLabel("Hasło", { exact: true })
     .fill(process.env.POP_TEST_PASSWORD || "Local-test-Only-925!");
   await page.getByRole("button", { name: "Zaloguj się" }).click();
-  await expect(page.getByText("POPMES 0.1.1")).toBeVisible();
+  await expect(page.getByText("POPMES 0.1.2")).toBeVisible();
+  await page.getByRole("button", { name: /Zamówienia/ }).click();
+  await expect(
+    page.getByRole("combobox", { name: "Status zamówienia" }).locator("option", {
+      hasText: "W trakcie realizacji",
+    }),
+  ).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /Produkcja/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Wysyłka/ })).toBeVisible();
 });
 
 test("błąd pobrania wersji nie blokuje logowania", async ({ page }) => {

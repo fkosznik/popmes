@@ -38,6 +38,7 @@ import {
   Zap,
   RefreshCw,
   Pencil,
+  Trash2,
   Popcorn,
   Menu,
   Ban,
@@ -392,6 +393,7 @@ export default function App() {
   const [page, setPage] = useState("dashboard"),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState("all"),
+    [orderFilter, setOrderFilter] = useState("all"),
     [orderSort, setOrderSort] = useState<{
       key: OrderSortKey;
       dir: "asc" | "desc";
@@ -447,6 +449,7 @@ export default function App() {
     primary: boolean;
   }>({ name: "", active: true, primary: false });
   const startApplied = useRef(false);
+  const orderFilterReady = useRef(false);
   const [lines, setLines] = useState<OrderLine[]>([]);
   const [recipeLines, setRecipeLines] = useState<
     { stock_id: number; quantity: string }[]
@@ -465,7 +468,7 @@ export default function App() {
       params.set("orders_limit", "50");
       params.set("orders_offset", String(ordersOffset));
       if (query) params.set("orders_q", query);
-      if (filter) params.set("orders_status", filter);
+      if (orderFilter && orderFilter !== "all") params.set("orders_status", orderFilter);
       if (orderSort) {
         params.set("orders_sort", orderSort.key);
         params.set("orders_dir", orderSort.dir);
@@ -479,7 +482,7 @@ export default function App() {
     } catch {
       setOffline(true);
     }
-  }, [page, query, filter, orderSort, ordersOffset]);
+  }, [page, query, filter, orderFilter, orderSort, ordersOffset]);
   useEffect(() => {
     api<{ user: User | null }>("auth/me/")
       .then((r) => setUser(r.user))
@@ -503,8 +506,13 @@ export default function App() {
     };
   }, [user?.id]);
   useEffect(() => {
+    if (!user || orderFilterReady.current) return;
+    orderFilterReady.current = true;
+    if (user.orders_filter) setOrderFilter(user.orders_filter);
+  }, [user]);
+  useEffect(() => {
     setOrdersOffset(0);
-  }, [query, filter, orderSort, page]);
+  }, [query, filter, orderFilter, orderSort, page]);
   useEffect(() => {
     if (user) {
       load();
@@ -705,6 +713,16 @@ export default function App() {
       },
       false,
     );
+  }
+  function chooseOrderFilter(value: string) {
+    setOrderFilter(value);
+    if (!user) return;
+    setUser({ ...user, orders_filter: value });
+    void api<User>(
+      "account/orders-filter/",
+      { orders_filter: value },
+      requestKey(),
+    ).catch((e) => setError(errorText(e)));
   }
   function go(p: string) {
     setPage(p);
@@ -1203,6 +1221,12 @@ export default function App() {
                 {n.title}
                 {n.id === "orders" && (state?.summary?.active || active.length) > 0 && (
                   <b>{state?.summary?.active ?? active.length}</b>
+                )}
+                {n.id === "production" && productionRemaining > 0 && (
+                  <b title="Do wyprodukowania">{fmt.format(productionRemaining)}</b>
+                )}
+                {n.id === "shipping" && packingRemaining > 0 && (
+                  <b title="Do wysłania">{fmt.format(packingRemaining)}</b>
                 )}
               </button>
             ))}
@@ -1861,10 +1885,11 @@ export default function App() {
                   >
                     <select
                       aria-label="Status zamówienia"
-                      value={filter}
-                      onChange={(e) => setFilter(e.target.value)}
+                      value={orderFilter}
+                      onChange={(e) => chooseOrderFilter(e.target.value)}
                     >
                       <option value="all">Wszystkie statusy</option>
+                      <option value="in_progress">W trakcie realizacji</option>
                       {[
                         "draft",
                         "producing",
@@ -2524,6 +2549,27 @@ export default function App() {
                               <td>{c.email || "—"}</td>
                               <td>{c.phone || "—"}</td>
                               <td>
+                                {can("sales", "manager") && (
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Usuń ${c.name}`}
+                                    disabled={busy}
+                                    onClick={() => {
+                                      if (
+                                        !window.confirm(
+                                          `Usunąć klienta „${c.name}”? Nie da się usunąć klienta, który ma zamówienia.`,
+                                        )
+                                      )
+                                        return;
+                                      void perform(
+                                        `catalog/customers/${c.id}/delete/`,
+                                        {},
+                                      );
+                                    }}
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
+                                )}
                                 <button
                                   className="icon-button"
                                   aria-label={`Edytuj ${c.name}`}
@@ -3551,6 +3597,26 @@ export default function App() {
                       Edytuj
                     </button>
                   )}
+                  {can("manager") && !focusedStock.variant_id && (
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `Usunąć surowiec „${focusedStock.name}”? Nie da się usunąć pozycji ze stanem, recepturą albo historią ruchów.`,
+                          )
+                        )
+                          return;
+                        void perform(`stock/${focusedStock.id}/delete/`, {}).then(
+                          (result) => {
+                            if (result) setFocus(null);
+                          },
+                        );
+                      }}
+                    >
+                      Usuń
+                    </button>
+                  )}
                   {can("admin", "manager") && stockVariant && (
                     <button
                       className="primary"
@@ -3777,6 +3843,27 @@ export default function App() {
                       Edytuj
                     </button>
                   )}
+                  {can("admin", "manager") && (
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `Usunąć produkt „${focusedProduct.name}”? Nie da się usunąć smaku użytego w zamówieniach.`,
+                          )
+                        )
+                          return;
+                        void perform(
+                          `catalog/products/${focusedProduct.id}/delete/`,
+                          {},
+                        ).then((result) => {
+                          if (result) setFocus(null);
+                        });
+                      }}
+                    >
+                      Usuń
+                    </button>
+                  )}
                 </div>
                 <h3>Warianty</h3>
                 {(state?.variants || []).filter(
@@ -3871,6 +3958,27 @@ export default function App() {
                       }
                     >
                       Edytuj
+                    </button>
+                  )}
+                  {can("admin", "manager") && (
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `Usunąć wariant „${focusedVariant.name}”? Nie da się usunąć wariantu użytego w zamówieniach albo magazynie.`,
+                          )
+                        )
+                          return;
+                        void perform(
+                          `catalog/variants/${focusedVariant.id}/delete/`,
+                          {},
+                        ).then((result) => {
+                          if (result) setFocus(null);
+                        });
+                      }}
+                    >
+                      Usuń
                     </button>
                   )}
                   {can("manager") && (

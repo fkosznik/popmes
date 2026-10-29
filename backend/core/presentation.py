@@ -52,6 +52,7 @@ def user_data(user):
         "language": profile.language if profile else "pl",
         "timezone": profile.timezone if profile else "Europe/Warsaw",
         "start_page": profile.start_page if profile else "dashboard",
+        "orders_filter": profile.orders_filter if profile else "all",
         "appearance": appearance if appearance == "dark" else "light",
         "roles": roles(user),
         "active": user.is_active,

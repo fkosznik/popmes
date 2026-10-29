@@ -177,4 +177,31 @@ def catalog(request, kind):
     return {"id": value.pk}
 
 
+@api_view(["POST"])
+@mutation
+def delete_product(request, pk):
+    s.permit(request.user, "admin", "manager")
+    get_object_or_404(Product, pk=pk)
+    s.remove_product(pk)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def delete_variant(request, pk):
+    s.permit(request.user, "admin", "manager")
+    get_object_or_404(Variant, pk=pk)
+    s.remove_variant(pk)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def delete_customer(request, pk):
+    s.permit(request.user, "sales", "manager")
+    get_object_or_404(Customer, pk=pk)
+    s.remove_customer(pk)
+    return {"ok": True}
+
+
 

@@ -11,6 +11,7 @@ export type User = {
   language: "pl" | "en";
   timezone: string;
   start_page: string;
+  orders_filter: string;
   appearance: "light" | "dark";
   roles: string[];
   active: boolean;

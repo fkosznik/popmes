@@ -4,6 +4,20 @@
 
 Kolejne zmiany trafiają tutaj, zanim dostaną numer wydania.
 
+## 0.1.2 — 2026-10-29
+
+- Każdy użytkownik ma własny filtr listy zamówień. Wybrany status zostaje po ponownym wejściu w zamówienia.
+- Na liście zamówień jest widok „W trakcie realizacji”: wszystkie zamówienia oprócz zrealizowanych.
+- W menu Produkcja widać, ile opakowań zostało do wyprodukowania, a w menu Wysyłka, ile zostało do wysłania.
+- Z katalogu można usunąć nieużywany smak, wariant, klienta i surowiec. Pozycja użyta w zamówieniu, magazynie albo recepturze zostaje, a komunikat mówi dlaczego.
+- Komunikaty błędów podają po polsku, które pole trzeba poprawić.
+
+Aktualizacja istniejącej instalacji, po zielonych kontrolach `quality` i `application` dla tego commita:
+
+```bash
+bash scripts/update.sh v0.1.2 --verified
+```
+
 ## 0.1.1 — 2026-10-26
 
 - Z otwartego zamówienia, także z przeglądu, można zgłosić produkcję i oznaczyć wysyłkę. Nie trzeba najpierw wchodzić w zakładki Produkcja ani Wysyłka.
@@ -51,7 +65,7 @@ Skrypt przyjmuje tag, bo `git fetch --tags` i `rev-parse` zamieniają go na comm
 
 Źródłem numeru jest plik `VERSION` w katalogu głównym. `frontend/package.json` ma tę samą wartość; po zmianie `VERSION` uruchom `bash scripts/sync-version.sh`.
 
-- `0.1.2` — poprawki błędów;
+- `0.1.3` — poprawki błędów;
 - `0.2.0` — kolejny zestaw funkcji;
 - zmień `VERSION`, zsynchronizuj package.json, dopisz changelog, uruchom testy, scal zmiany do `main` i poczekaj na zielone kontrole dokładnego commita;
 - utwórz tag `vX.Y.Z` wskazujący ten commit i opublikuj GitHub Release;

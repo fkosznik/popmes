@@ -500,6 +500,7 @@ class Profile(models.Model):
     timezone = models.CharField(max_length=64, default="Europe/Warsaw")
     start_page = models.CharField(max_length=20, default="dashboard")
     appearance = models.CharField(max_length=10, default="light")
+    orders_filter = models.CharField(max_length=32, default="all")
     current_workspace = models.ForeignKey(
         Workspace, null=True, blank=True, on_delete=models.SET_NULL, related_name="members"
     )

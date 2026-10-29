@@ -36,6 +36,7 @@ from .models import (
     StockMove,
     StockCategory,
     Order,
+    Customer,
     Organization,
     Workspace,
     Profile,
@@ -1710,6 +1711,76 @@ def add_stock_product(category_id, name, unit, supplier_id=None):
     )
 
 
+def stock_is_unused(stock):
+    return (
+        not stock.quantity
+        and not stock.reserved
+        and not stock.moves.exists()
+        and not stock.order_holds.exists()
+        and not stock.recipe_lines.exists()
+    )
+
+
+def refuse_finished_stock(variant):
+    for stock in StockItem.objects.filter(variant=variant):
+        if not stock_is_unused(stock):
+            raise ValidationError(
+                "Nie można usunąć, bo w magazynie są opakowania, rezerwacja albo historia ruchów."
+            )
+
+
+def remove_variant(variant_id):
+    variant = Variant.objects.get(pk=variant_id)
+    if Item.objects.filter(variant=variant).exists():
+        raise ValidationError(
+            "Nie można usunąć wariantu, bo jest w zamówieniach."
+        )
+    refuse_finished_stock(variant)
+    StockItem.objects.filter(variant=variant).delete()
+    variant.delete()
+
+
+def remove_product(product_id):
+    product = Product.objects.get(pk=product_id)
+    if (
+        Item.objects.filter(product=product).exists()
+        or Task.objects.filter(product=product).exists()
+        or Batch.objects.filter(product=product).exists()
+    ):
+        raise ValidationError(
+            "Nie można usunąć produktu, bo jest w zamówieniach."
+        )
+    variants = list(Variant.objects.filter(product=product))
+    for variant in variants:
+        refuse_finished_stock(variant)
+    for variant in variants:
+        StockItem.objects.filter(variant=variant).delete()
+        variant.delete()
+    product.delete()
+
+
+def remove_customer(customer_id):
+    customer = Customer.objects.get(pk=customer_id)
+    if Order.objects.filter(customer=customer).exists():
+        raise ValidationError(
+            "Nie można usunąć klienta, bo ma zamówienia."
+        )
+    customer.delete()
+
+
+def remove_material(stock_id):
+    stock = StockItem.objects.select_for_update().get(pk=stock_id)
+    if stock.variant_id:
+        raise ValidationError(
+            "To jest gotowy produkt z katalogu. Usuń go w katalogu produktów."
+        )
+    if not stock_is_unused(stock):
+        raise ValidationError(
+            "Nie można usunąć surowca, który ma stan, rezerwację, recepturę albo historię ruchów."
+        )
+    stock.delete()
+
+
 def receive_stock(stock_id, quantity, user, why):
     stock = StockItem.objects.select_for_update().get(pk=stock_id)
     if stock.unit == "szt":
@@ -1778,6 +1849,8 @@ def status_filter_q(name):
         return (status_filter_q("producing") | status_filter_q("awaiting_shipment")) & Q(
             due_at__lt=timezone.now()
         )
+    if name == "in_progress":
+        return ~status_filter_q("completed")
     return Q()
 
 

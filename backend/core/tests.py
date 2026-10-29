@@ -1525,6 +1525,105 @@ class FlowTests(TestCase):
         ]
         self.assertTrue(limited)
 
+    def test_each_user_keeps_an_order_filter_and_open_orders_skip_finished(self):
+        finished = self.order(quantity=4)
+        item = finished.items.get()
+        item.allocated = item.quantity
+        item.produced = 0
+        item.packed = item.quantity
+        item.save()
+        open_order = self.order(quantity=3)
+        saved = self.post("account/orders-filter/", {"orders_filter": "in_progress"})
+        self.assertEqual(saved.data["orders_filter"], "in_progress")
+        me = self.client.get("/api/auth/me/")
+        self.assertEqual(me.json()["user"]["orders_filter"], "in_progress")
+        listed = self.client.get(
+            "/api/state/?orders_scope=page&orders_status=in_progress"
+        )
+        ids = [row["id"] for row in listed.json()["orders"]]
+        self.assertIn(open_order.pk, ids)
+        self.assertNotIn(finished.pk, ids)
+        other = get_user_model().objects.create_user(
+            "handlowiec", password="Test-password-123!"
+        )
+        group, _ = Group.objects.get_or_create(name="sales")
+        other.groups.add(group)
+        client = APIClient()
+        client.force_login(other)
+        self.assertEqual(
+            client.get("/api/auth/me/").json()["user"]["orders_filter"], "all"
+        )
+
+    def test_unused_catalog_rows_can_be_deleted_and_errors_are_polish(self):
+        missing = self.post("catalog/products/", {"name": "Bez kodu"}, expected=400)
+        self.assertIn("Kod", missing.data["detail"])
+        self.assertNotIn("This field", missing.data["detail"])
+        self.assertNotRegex(missing.data["detail"], r"\bcode\b")
+        self.order(2)
+        blocked_product = self.post(
+            f"catalog/products/{self.product.pk}/delete/", expected=400
+        )
+        self.assertIn("zamówieniach", blocked_product.data["detail"])
+        created = self.post(
+            "catalog/products/", {"code": "NOWY", "name": "Nowy smak"}
+        )
+        variant = self.post(
+            "catalog/variants/",
+            {
+                "product": created.data["id"],
+                "sku": "NOWY30",
+                "name": "Nowy 30",
+                "weight_g": "30",
+            },
+        )
+        self.assertTrue(
+            StockItem.objects.filter(variant_id=variant.data["id"]).exists()
+        )
+        self.post(f"catalog/products/{created.data['id']}/delete/")
+        self.assertFalse(Product.objects.filter(code="NOWY").exists())
+        self.assertFalse(Variant.objects.filter(sku="NOWY30").exists())
+        self.assertFalse(
+            StockItem.objects.filter(variant_id=variant.data["id"]).exists()
+        )
+        blocked_customer = self.post(
+            f"catalog/customers/{self.customer.pk}/delete/", expected=400
+        )
+        self.assertIn("zamówienia", blocked_customer.data["detail"])
+        fresh = self.post(
+            "catalog/customers/",
+            {
+                "name": "Do usunięcia",
+                "delivery_addresses": [
+                    {
+                        "id": "drop",
+                        "postal_code": "00-001",
+                        "city": "Warszawa",
+                        "street": "Prosta",
+                        "house_number": "1",
+                    }
+                ],
+            },
+        )
+        self.post(f"catalog/customers/{fresh.data['id']}/delete/")
+        self.assertFalse(Customer.objects.filter(pk=fresh.data["id"]).exists())
+        category = self.post("stock/categories/", {"name": "Surowce test"}).data["id"]
+        material = self.post(
+            "stock/products/",
+            {"category_id": category, "name": "Folia testowa", "unit": "szt"},
+        ).data["id"]
+        self.post(f"stock/{material}/delete/")
+        self.assertFalse(StockItem.objects.filter(pk=material).exists())
+        kept = self.post(
+            "stock/products/",
+            {"category_id": category, "name": "Folia użyta", "unit": "szt"},
+        ).data["id"]
+        self.post(
+            "stock/receipt/",
+            {"stock_id": kept, "quantity": "2", "reason": "Dostawa"},
+        )
+        refused = self.post(f"stock/{kept}/delete/", expected=400)
+        self.assertIn("surowca", refused.data["detail"])
+
 
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks required")
 class ConcurrencyTests(TransactionTestCase):

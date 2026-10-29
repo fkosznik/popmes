@@ -82,6 +82,15 @@ def stock_detail(request, pk):
 
 @api_view(["POST"])
 @mutation
+def stock_delete(request, pk):
+    s.permit(request.user, "manager")
+    get_object_or_404(StockItem, pk=pk)
+    s.remove_material(pk)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
 def stock_edit(request, pk):
     s.permit(request.user, "manager")
     get_object_or_404(StockItem, pk=pk)
