@@ -1560,10 +1560,12 @@ class FlowTests(TestCase):
         self.assertNotIn("This field", missing.data["detail"])
         self.assertNotRegex(missing.data["detail"], r"\bcode\b")
         self.order(2)
-        blocked_product = self.post(
-            f"catalog/products/{self.product.pk}/delete/", expected=400
-        )
-        self.assertIn("zamówieniach", blocked_product.data["detail"])
+        self.post(f"catalog/products/{self.product.pk}/delete/")
+        self.product.refresh_from_db()
+        self.assertFalse(self.product.active)
+        self.post(f"catalog/products/{self.product.pk}/restore/")
+        self.product.refresh_from_db()
+        self.assertTrue(self.product.active)
         created = self.post(
             "catalog/products/", {"code": "NOWY", "name": "Nowy smak"}
         )
@@ -1580,15 +1582,16 @@ class FlowTests(TestCase):
             StockItem.objects.filter(variant_id=variant.data["id"]).exists()
         )
         self.post(f"catalog/products/{created.data['id']}/delete/")
-        self.assertFalse(Product.objects.filter(code="NOWY").exists())
-        self.assertFalse(Variant.objects.filter(sku="NOWY30").exists())
-        self.assertFalse(
+        self.assertFalse(Product.objects.get(code="NOWY").active)
+        self.assertTrue(Variant.objects.filter(sku="NOWY30").exists())
+        self.assertTrue(
             StockItem.objects.filter(variant_id=variant.data["id"]).exists()
         )
-        blocked_customer = self.post(
-            f"catalog/customers/{self.customer.pk}/delete/", expected=400
-        )
-        self.assertIn("zamówienia", blocked_customer.data["detail"])
+        self.post(f"catalog/products/{created.data['id']}/restore/")
+        self.assertTrue(Product.objects.get(code="NOWY").active)
+        self.post(f"catalog/customers/{self.customer.pk}/delete/")
+        self.customer.refresh_from_db()
+        self.assertFalse(self.customer.active)
         fresh = self.post(
             "catalog/customers/",
             {
@@ -1605,14 +1608,18 @@ class FlowTests(TestCase):
             },
         )
         self.post(f"catalog/customers/{fresh.data['id']}/delete/")
-        self.assertFalse(Customer.objects.filter(pk=fresh.data["id"]).exists())
+        self.assertFalse(Customer.objects.get(pk=fresh.data["id"]).active)
+        self.post(f"catalog/customers/{fresh.data['id']}/restore/")
+        self.assertTrue(Customer.objects.get(pk=fresh.data["id"]).active)
         category = self.post("stock/categories/", {"name": "Surowce test"}).data["id"]
         material = self.post(
             "stock/products/",
             {"category_id": category, "name": "Folia testowa", "unit": "szt"},
         ).data["id"]
         self.post(f"stock/{material}/delete/")
-        self.assertFalse(StockItem.objects.filter(pk=material).exists())
+        self.assertTrue(StockItem.objects.get(pk=material).archived)
+        self.post(f"stock/{material}/restore/")
+        self.assertFalse(StockItem.objects.get(pk=material).archived)
         kept = self.post(
             "stock/products/",
             {"category_id": category, "name": "Folia użyta", "unit": "szt"},
@@ -1621,8 +1628,14 @@ class FlowTests(TestCase):
             "stock/receipt/",
             {"stock_id": kept, "quantity": "2", "reason": "Dostawa"},
         )
-        refused = self.post(f"stock/{kept}/delete/", expected=400)
-        self.assertIn("surowca", refused.data["detail"])
+        from decimal import Decimal
+        self.assertEqual(StockItem.objects.get(pk=kept).quantity, Decimal("2"))
+        state = self.client.get("/api/state/?orders_scope=none")
+        self.assertIn("Przyjęcie", state.json()["undo"]["label"])
+        self.post("undo/")
+        self.assertEqual(StockItem.objects.get(pk=kept).quantity, Decimal("0"))
+        self.post(f"stock/{kept}/delete/")
+        self.assertTrue(StockItem.objects.get(pk=kept).archived)
 
 
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks required")

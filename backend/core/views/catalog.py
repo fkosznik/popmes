@@ -61,6 +61,7 @@ def state(request):
                 "stock": [],
                 "categories": [],
                 "suppliers": [],
+                "undo": s.undo_for(request.user),
                 **settings_payload,
             }
         )
@@ -142,6 +143,7 @@ def state(request):
             "stock": stock,
             "categories": categories,
             "suppliers": [supplier_data(item) for item in s.supplier_rows()],
+            "undo": s.undo_for(request.user),
             **settings_payload,
         }
     )
@@ -182,7 +184,7 @@ def catalog(request, kind):
 def delete_product(request, pk):
     s.permit(request.user, "admin", "manager")
     get_object_or_404(Product, pk=pk)
-    s.remove_product(pk)
+    s.remove_product(pk, request.user)
     return {"ok": True}
 
 
@@ -191,7 +193,7 @@ def delete_product(request, pk):
 def delete_variant(request, pk):
     s.permit(request.user, "admin", "manager")
     get_object_or_404(Variant, pk=pk)
-    s.remove_variant(pk)
+    s.remove_variant(pk, request.user)
     return {"ok": True}
 
 
@@ -200,7 +202,41 @@ def delete_variant(request, pk):
 def delete_customer(request, pk):
     s.permit(request.user, "sales", "manager")
     get_object_or_404(Customer, pk=pk)
-    s.remove_customer(pk)
+    s.remove_customer(pk, request.user)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def restore_product(request, pk):
+    s.permit(request.user, "admin", "manager")
+    get_object_or_404(Product, pk=pk)
+    s.restore_product(pk)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def restore_variant(request, pk):
+    s.permit(request.user, "admin", "manager")
+    get_object_or_404(Variant, pk=pk)
+    s.restore_variant(pk)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def restore_customer(request, pk):
+    s.permit(request.user, "sales", "manager")
+    get_object_or_404(Customer, pk=pk)
+    s.restore_customer(pk)
+    return {"ok": True}
+
+
+@api_view(["POST"])
+@mutation
+def undo_last(request):
+    s.apply_undo(request.user)
     return {"ok": True}
 
 

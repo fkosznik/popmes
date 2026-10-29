@@ -5,21 +5,50 @@ set -euo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "$0")/ops-common.sh"
 ops_root
-if [ "${1:-}" = "" ] || [ "${2:-}" != "--verified" ]; then
-  echo "Usage: bash scripts/update.sh <tag-or-commit> --verified" >&2
+if [ "$#" -eq 0 ]; then
+  interactive=1
+  target=""
+elif [ "$#" -eq 2 ] && [ "$2" = "--verified" ]; then
+  interactive=0
+  target="$1"
+else
+  echo "Usage: bash scripts/update.sh [tag] --verified" >&2
+  echo "Without a tag, the script lists GitHub releases and proposes the newest one." >&2
   exit 1
 fi
-target="$1"
 ops_lock
-cleanup() { ops_unlock; }
+caddy_saved=""
+restore_local_caddy() {
+  if [ -z "${caddy_saved:-}" ] || [ ! -f "${caddy_saved}" ]; then
+    return 0
+  fi
+  cp "$caddy_saved" Caddyfile
+  rm -f "$caddy_saved"
+  caddy_saved=""
+  if [ "${USE_HTTPS:-0}" = "1" ] && [ "${COMPOSE_ARGS+x}" = "x" ]; then
+    docker compose "${COMPOSE_ARGS[@]}" restart caddy || true
+  fi
+}
+cleanup() {
+  restore_local_caddy
+  ops_unlock
+}
 trap cleanup EXIT
 if [ ! -f .env ]; then
   echo "Missing .env. Refusing to update." >&2
   exit 1
 fi
-if [ -n "$(git status --porcelain)" ]; then
-  echo "The working tree has local changes. Commit or remove them before updating." >&2
-  exit 1
+dirty="$(git status --porcelain)"
+if [ -n "$dirty" ]; then
+  dirty_count="$(printf '%s\n' "$dirty" | wc -l | tr -d ' ')"
+  if [ "$dirty_count" != "1" ] || ! printf '%s\n' "$dirty" | grep -Eq '^[ M][ M] Caddyfile$'; then
+    echo "The working tree has local changes. Commit or remove them before updating." >&2
+    exit 1
+  fi
+  caddy_saved="$(mktemp)"
+  cp Caddyfile "$caddy_saved"
+  git restore Caddyfile 2>/dev/null || git checkout -- Caddyfile
+  echo "The local Caddyfile is kept and restored when the update finishes."
 fi
 set -a
 # shellcheck disable=SC1091
@@ -37,6 +66,84 @@ if [ "${POPMES_ENV:-local}" = "production" ]; then
   fi
 fi
 git fetch --tags origin
+if [ "$interactive" -eq 1 ]; then
+  choose_release() {
+    local current releases proposed choice again chosen_ver
+    current="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
+    echo "Zainstalowana wersja: ${current:-nieznana}"
+    releases="$(gh api --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' "repos/${repo_slug}/releases" || true)"
+    if [ -z "$releases" ]; then
+      echo "Nie udało się odczytać wydań z GitHuba." >&2
+      exit 1
+    fi
+    echo "Dostępne wydania:"
+    printf '%s\n' "$releases" | while IFS= read -r tag; do
+      if [ "${tag#v}" = "$current" ]; then
+        echo "  ${tag}  (ta wersja)"
+      else
+        echo "  ${tag}"
+      fi
+    done
+    proposed="$(printf '%s\n' "$releases" | python3 -c 'import sys
+rows=[line.strip() for line in sys.stdin if line.strip()]
+def key(value):
+    value=value[1:] if value.startswith("v") else value
+    parts=[]
+    for part in value.split("."):
+        parts.append(int(part) if part.isdigit() else 0)
+    return tuple(parts)
+print(sorted(rows, key=key)[-1] if rows else "")')"
+    if [ -z "$proposed" ]; then
+      echo "Brak wydań." >&2
+      exit 1
+    fi
+    if [ "${proposed#v}" = "$current" ]; then
+      echo "To już jest najnowsze wydanie. Wpisanie innego tagu zejdzie na starszą wersję."
+    else
+      echo "Proponowana aktualizacja: ${proposed}"
+    fi
+    if [ ! -t 0 ]; then
+      echo "Brak terminala. Użyj: bash scripts/update.sh ${proposed} --verified" >&2
+      exit 1
+    fi
+    printf 'Enter zatwierdza %s, albo wpisz tag. q kończy: ' "$proposed"
+    read -r choice
+    if [ "$choice" = "q" ] || [ "$choice" = "Q" ]; then
+      echo "Anulowano."
+      exit 0
+    fi
+    if [ -z "$choice" ]; then
+      choice="$proposed"
+    fi
+    case "$choice" in
+      v*) ;;
+      *) choice="v${choice}" ;;
+    esac
+    chosen_ver="${choice#v}"
+    if [ -n "$current" ] && [ "$chosen_ver" != "$current" ] && [ "$(printf '%s\n%s\n' "$chosen_ver" "$current" | python3 -c 'import sys
+rows=[line.strip() for line in sys.stdin if line.strip()]
+def key(value):
+    parts=[]
+    for part in value.split("."):
+        parts.append(int(part) if part.isdigit() else 0)
+    return tuple(parts)
+print(sorted(rows, key=key)[0])')" = "$chosen_ver" ]; then
+      echo "To starsza wersja. Baza nie zostanie cofnięta. Wpisz ten sam tag jeszcze raz, żeby potwierdzić:"
+      read -r again
+      case "$again" in
+        v*) ;;
+        *) again="v${again}" ;;
+      esac
+      if [ "$again" != "$choice" ]; then
+        echo "Nie potwierdzono. Anulowano." >&2
+        exit 1
+      fi
+    fi
+    target="$choice"
+  }
+  repo_slug="$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+  choose_release
+fi
 if ! git rev-parse --verify --quiet "${target}^{commit}" >/dev/null; then
   echo "Cannot resolve ${target}." >&2
   exit 1
@@ -48,13 +155,46 @@ if ! command -v gh >/dev/null 2>&1; then
   echo "gh is not available, so CI for ${resolved} cannot be verified." >&2
   exit 1
 fi
-checks="$(gh api --jq '.check_runs[] | [.name, .conclusion, .head_sha] | @tsv' "repos/${repo_slug}/commits/${resolved}/check-runs" || true)"
-for required in quality application; do
-  conclusion="$(printf '%s\n' "$checks" | awk -F '\t' -v name="$required" -v sha="$resolved" '$1 == name && $3 == sha { print $2; exit }')"
-  if [ "$conclusion" != "success" ]; then
-    echo "Required check ${required} for ${resolved} is '${conclusion:-missing}', not success." >&2
+check_rows() {
+  gh api --jq '.check_runs[] | [.name, .conclusion // "", .status // "", .head_sha] | @tsv' "repos/${repo_slug}/commits/${resolved}/check-runs" || true
+}
+check_matches() {
+  local name="$1" checks="$2" kind="$3"
+  printf '%s\n' "$checks" | awk -F '\t' -v name="$name" -v sha="$resolved" -v kind="$kind" '
+    $1 == name && $4 == sha {
+      if (kind == "success" && $2 == "success") found = 1
+      if (kind == "failed" && ($2 == "failure" || $2 == "cancelled" || $2 == "timed_out" || $2 == "action_required")) found = 1
+      if (kind == "pending" && ($3 == "queued" || $3 == "in_progress" || $3 == "pending" || $3 == "waiting" || $2 == "")) found = 1
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+waited=0
+pause="${UPDATE_CHECK_INTERVAL:-20}"
+limit="${UPDATE_CHECK_TIMEOUT:-900}"
+while true; do
+  checks="$(check_rows)"
+  pending=0
+  for required in quality application; do
+    if check_matches "$required" "$checks" success; then
+      continue
+    fi
+    if check_matches "$required" "$checks" failed && ! check_matches "$required" "$checks" pending; then
+      echo "Required check ${required} for ${resolved} is not success." >&2
+      exit 1
+    fi
+    pending=1
+    echo "Waiting for check ${required} on ${resolved}."
+  done
+  if [ "$pending" -eq 0 ]; then
+    break
+  fi
+  if [ "$waited" -ge "$limit" ]; then
+    echo "Timed out waiting for quality and application on ${resolved}." >&2
     exit 1
   fi
+  sleep "$pause"
+  waited=$((waited + pause))
 done
 mkdir -p updates
 printf '%s current=%s target=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$current" "$resolved" >> updates/history.log

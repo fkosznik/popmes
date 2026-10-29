@@ -80,14 +80,17 @@ Wszystko zapisane po tej kopii przepada.
 Nie podnosi głównej wersji PostgreSQL. Nie robi automatycznego restore.
 
 ```bash
+bash scripts/update.sh
 bash scripts/update.sh <tag-albo-commit> --verified
 ```
 
-Tag, na przykład `v0.1.0`, jest zamieniany na commit. GitHub Release sam nie aktualizuje VM. Skrypt robi to dopiero na hoście i tylko wtedy, gdy kontrole `quality` i `application` dla tego commita są zielone.
+Bez tagu skrypt pokazuje zainstalowaną wersję i wydania z GitHuba, proponuje najnowsze i pyta o potwierdzenie. Starsza wersja wymaga wpisania tagu drugi raz, bo nie cofa bazy.
 
-`--verified` sprawdza przez `gh` wyniki `quality` i `application` dla dokładnego SHA. Brak `gh`, oczekujące testy albo błąd kończą aktualizację. Skrypt:
+Tag, na przykład `v0.1.2`, jest zamieniany na commit. GitHub Release sam nie aktualizuje VM. Skrypt robi to dopiero na hoście i tylko wtedy, gdy kontrole `quality` i `application` dla tego commita są zielone.
 
-1. Przerywa, gdy drzewo ma lokalne zmiany, brakuje `.env` albo `DEBUG=1`.
+`--verified` sprawdza przez `gh` wyniki `quality` i `application` dla dokładnego SHA. Wystarczy jeden zielony wynik. Nowszy przebieg, który jeszcze trwa, nie blokuje aktualizacji. Gdy zielonego wyniku jeszcze nie ma, skrypt czeka. Brak `gh` albo zakończony błąd przerywa aktualizację. Jedyna dozwolona lokalna zmiana to `Caddyfile`: skrypt odkłada go na czas aktualizacji i wstawia z powrotem, a przy HTTPS restartuje Caddy. Skrypt:
+
+1. Przerywa, gdy drzewo ma inne lokalne zmiany niż `Caddyfile`, brakuje `.env` albo `DEBUG=1`.
 2. Blokuje drugą aktualizację plikiem `.update.lock`.
 3. Zapisuje obecną i docelową rewizję w `updates/history.log`. Osobno, zanim cokolwiek zbuduje albo zatrzyma, zapisuje identyfikatory obrazów faktycznie używanych przez kontenery w nowym katalogu `updates/<czas>`. Tag `latest` i SHA checkoutu nie są tym identyfikatorem. Brak jednego kontenera albo brak odczytu obrazu kończy aktualizację przed zatrzymaniem usług.
 4. Buduje obrazy. Przy błędzie builda z powrotem oznaczane są obrazy zapisane w tym katalogu, nie obraz spod tagu `latest`.

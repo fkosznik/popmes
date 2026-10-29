@@ -15,6 +15,10 @@ __all__ = [
     "delete_product",
     "delete_variant",
     "delete_customer",
+    "restore_product",
+    "restore_variant",
+    "restore_customer",
+    "undo_last",
     "save_order",
     "detail",
     "order_action",
@@ -41,6 +45,7 @@ __all__ = [
     "stock_detail",
     "stock_edit",
     "stock_delete",
+    "stock_restore",
     "supplier_update",
     "recipe_save",
     "stock_receipt",
@@ -60,6 +65,10 @@ from core.views.catalog import catalog
 from core.views.catalog import delete_product
 from core.views.catalog import delete_variant
 from core.views.catalog import delete_customer
+from core.views.catalog import restore_product
+from core.views.catalog import restore_variant
+from core.views.catalog import restore_customer
+from core.views.catalog import undo_last
 from core.views.orders import save_order
 from core.views.orders import detail
 from core.views.orders import order_action
@@ -86,6 +95,7 @@ from core.views.stock import stock_supplier
 from core.views.stock import stock_detail
 from core.views.stock import stock_edit
 from core.views.stock import stock_delete
+from core.views.stock import stock_restore
 from core.views.stock import supplier_update
 from core.views.stock import recipe_save
 from core.views.stock import stock_receipt

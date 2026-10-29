@@ -4,6 +4,18 @@
 
 Kolejne zmiany trafiają tutaj, zanim dostaną numer wydania.
 
+## 0.1.3 — 2026-10-29
+
+- Aktualizacja jedną komendą zostawia lokalny `Caddyfile` i nie czeka, gdy test dla tego wydania jest już zielony. Bez tagu pokazuje wydania z GitHuba i proponuje najnowsze.
+- Usunięty klient, produkt, wariant i surowiec trafiają do archiwum i można je przywrócić.
+- Przycisk Cofnij oraz Ctrl+Z cofają ostatnie przyjęcie towaru albo ostatnie przeniesienie do archiwum.
+
+Aktualizacja istniejącej instalacji, po zielonych kontrolach `quality` i `application` dla tego commita:
+
+```bash
+bash scripts/update.sh v0.1.3 --verified
+```
+
 ## 0.1.2 — 2026-10-29
 
 - Każdy użytkownik ma własny filtr listy zamówień. Wybrany status zostaje po ponownym wejściu w zamówienia.
@@ -66,7 +78,7 @@ Skrypt przyjmuje tag, bo `git fetch --tags` i `rev-parse` zamieniają go na comm
 
 Źródłem numeru jest plik `VERSION` w katalogu głównym. `frontend/package.json` ma tę samą wartość; po zmianie `VERSION` uruchom `bash scripts/sync-version.sh`.
 
-- `0.1.3` — poprawki błędów;
+- `0.1.4` — poprawki błędów;
 - `0.2.0` — kolejny zestaw funkcji;
 - zmień `VERSION`, zsynchronizuj package.json, dopisz changelog, uruchom testy, scal zmiany do `main` i poczekaj na zielone kontrole dokładnego commita;
 - utwórz tag `vX.Y.Z` wskazujący ten commit i opublikuj GitHub Release;

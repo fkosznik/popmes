@@ -226,6 +226,7 @@ export type StockItem = {
   supplier_id: number | null;
   supplier_name: string;
   weight_g: string | null;
+  archived: boolean;
 };
 export type StockMoveRow = {
   id: number;
@@ -287,4 +288,5 @@ export type State = {
   organization: Organization;
   workspaces: Workspace[];
   workspace_id: number;
+  undo: { label: string } | null;
 };

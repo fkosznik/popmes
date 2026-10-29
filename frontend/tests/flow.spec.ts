@@ -192,7 +192,7 @@ test("menu pokazuje wersję z API", async ({ page }) => {
     .getByLabel("Hasło", { exact: true })
     .fill(process.env.POP_TEST_PASSWORD || "Local-test-Only-925!");
   await page.getByRole("button", { name: "Zaloguj się" }).click();
-  await expect(page.getByText("POPMES 0.1.2")).toBeVisible();
+  await expect(page.getByText("POPMES 0.1.3")).toBeVisible();
   await page.getByRole("button", { name: /Zamówienia/ }).click();
   await expect(
     page.getByRole("combobox", { name: "Status zamówienia" }).locator("option", {

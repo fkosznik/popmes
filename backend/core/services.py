@@ -43,6 +43,7 @@ from .models import (
     Supplier,
     Recipe,
     RecipeLine,
+    UndoAction,
 )
 
 ROLES = ["sales", "production", "packing", "manager", "admin"]
@@ -1721,78 +1722,167 @@ def stock_is_unused(stock):
     )
 
 
-def refuse_finished_stock(variant):
-    for stock in StockItem.objects.filter(variant=variant):
-        if not stock_is_unused(stock):
-            raise ValidationError(
-                "Nie można usunąć, bo w magazynie są opakowania, rezerwacja albo historia ruchów."
-            )
+def remember_undo(user, kind, label, payload):
+    UndoAction.objects.update_or_create(
+        user=user,
+        defaults={
+            "kind": kind,
+            "label": label[:180],
+            "payload": payload,
+            "created_at": timezone.now(),
+        },
+    )
 
 
-def remove_variant(variant_id):
+def undo_for(user):
+    row = UndoAction.objects.filter(user=user).first()
+    if row is None:
+        return None
+    return {"label": row.label}
+
+
+def remove_variant(variant_id, user):
     variant = Variant.objects.get(pk=variant_id)
-    if Item.objects.filter(variant=variant).exists():
-        raise ValidationError(
-            "Nie można usunąć wariantu, bo jest w zamówieniach."
-        )
-    refuse_finished_stock(variant)
-    StockItem.objects.filter(variant=variant).delete()
-    variant.delete()
+    if not variant.active:
+        raise ValidationError("Ten wariant jest już w archiwum.")
+    variant.active = False
+    variant.save(update_fields=["active"])
+    remember_undo(
+        user,
+        "archive_variant",
+        f"Archiwum wariantu {variant.name}",
+        {"id": variant.pk},
+    )
 
 
-def remove_product(product_id):
+def remove_product(product_id, user):
     product = Product.objects.get(pk=product_id)
-    if (
-        Item.objects.filter(product=product).exists()
-        or Task.objects.filter(product=product).exists()
-        or Batch.objects.filter(product=product).exists()
-    ):
-        raise ValidationError(
-            "Nie można usunąć produktu, bo jest w zamówieniach."
-        )
-    variants = list(Variant.objects.filter(product=product))
-    for variant in variants:
-        refuse_finished_stock(variant)
-    for variant in variants:
-        StockItem.objects.filter(variant=variant).delete()
-        variant.delete()
-    product.delete()
+    if not product.active:
+        raise ValidationError("Ten produkt jest już w archiwum.")
+    product.active = False
+    product.save(update_fields=["active"])
+    remember_undo(
+        user,
+        "archive_product",
+        f"Archiwum produktu {product.name}",
+        {"id": product.pk},
+    )
 
 
-def remove_customer(customer_id):
+def remove_customer(customer_id, user):
     customer = Customer.objects.get(pk=customer_id)
-    if Order.objects.filter(customer=customer).exists():
-        raise ValidationError(
-            "Nie można usunąć klienta, bo ma zamówienia."
-        )
-    customer.delete()
+    if not customer.active:
+        raise ValidationError("Ten klient jest już w archiwum.")
+    customer.active = False
+    customer.save(update_fields=["active"])
+    remember_undo(
+        user,
+        "archive_customer",
+        f"Archiwum klienta {customer.name}",
+        {"id": customer.pk},
+    )
 
 
-def remove_material(stock_id):
+def remove_material(stock_id, user):
     stock = StockItem.objects.select_for_update().get(pk=stock_id)
     if stock.variant_id:
         raise ValidationError(
-            "To jest gotowy produkt z katalogu. Usuń go w katalogu produktów."
+            "To jest gotowy produkt z katalogu. Archiwizujesz go w katalogu produktów."
         )
-    if not stock_is_unused(stock):
-        raise ValidationError(
-            "Nie można usunąć surowca, który ma stan, rezerwację, recepturę albo historię ruchów."
+    if stock.archived:
+        raise ValidationError("Ten surowiec jest już w archiwum.")
+    stock.archived = True
+    stock.save(update_fields=["archived"])
+    remember_undo(
+        user,
+        "archive_material",
+        f"Archiwum surowca {stock.name}",
+        {"id": stock.pk},
+    )
+
+
+def restore_variant(variant_id):
+    variant = Variant.objects.get(pk=variant_id)
+    variant.active = True
+    variant.save(update_fields=["active"])
+    if variant.product_id and not variant.product.active:
+        variant.product.active = True
+        variant.product.save(update_fields=["active"])
+
+
+def restore_product(product_id):
+    product = Product.objects.get(pk=product_id)
+    product.active = True
+    product.save(update_fields=["active"])
+
+
+def restore_customer(customer_id):
+    customer = Customer.objects.get(pk=customer_id)
+    customer.active = True
+    customer.save(update_fields=["active"])
+
+
+def restore_material(stock_id):
+    stock = StockItem.objects.select_for_update().get(pk=stock_id)
+    stock.archived = False
+    stock.save(update_fields=["archived"])
+
+
+def apply_undo(user):
+    try:
+        row = UndoAction.objects.select_for_update().get(user=user)
+    except UndoAction.DoesNotExist:
+        raise ValidationError("Nie ma zmiany do cofnięcia.")
+    payload = row.payload or {}
+    if row.kind == "receipt":
+        stock = StockItem.objects.select_for_update().get(pk=payload["stock_id"])
+        delta = Decimal(str(payload["delta"]))
+        if stock.quantity - stock.reserved < delta:
+            raise ValidationError(
+                "Nie można cofnąć przyjęcia, bo część towaru została już użyta."
+            )
+        record_move(stock, -delta, 0, user, "Cofnięcie przyjęcia")
+    elif row.kind == "stock_level":
+        set_stock_quantity(
+            payload["stock_id"],
+            payload["quantity"],
+            user,
+            "Cofnięcie zmiany stanu",
+            remember=False,
         )
-    stock.delete()
+    elif row.kind == "archive_variant":
+        restore_variant(payload["id"])
+    elif row.kind == "archive_product":
+        restore_product(payload["id"])
+    elif row.kind == "archive_customer":
+        restore_customer(payload["id"])
+    elif row.kind == "archive_material":
+        restore_material(payload["id"])
+    else:
+        raise ValidationError("Tej zmiany nie da się cofnąć.")
+    row.delete()
 
 
 def receive_stock(stock_id, quantity, user, why):
     stock = StockItem.objects.select_for_update().get(pk=stock_id)
+    if stock.archived:
+        raise ValidationError("Ten surowiec jest w archiwum. Najpierw go przywróć.")
     if stock.unit == "szt":
         number = integer(quantity, "Liczba sztuk")
     else:
         number = decimal(quantity, "Ilość", True)
     record_move(stock, number, 0, user, "Przyjęcie towaru: " + why)
     assign_stock(stock, user)
+    remember_undo(
+        user,
+        "receipt",
+        f"Przyjęcie {stock.name}: {number} {stock.unit}",
+        {"stock_id": stock.pk, "delta": str(number)},
+    )
     return stock
 
 
-def set_stock_quantity(item_id, quantity, user, why):
+def set_stock_quantity(item_id, quantity, user, why, remember=True):
     stock = StockItem.objects.select_for_update().get(pk=item_id)
     if stock.unit == "szt":
         number = decimal(quantity, "Liczba sztuk")
@@ -1807,10 +1897,18 @@ def set_stock_quantity(item_id, quantity, user, why):
         raise ValidationError(
             "Stan nie może być mniejszy niż ilość zarezerwowana dla zamówień."
         )
+    previous = stock.quantity
     increased = quantity > stock.quantity
     record_move(stock, quantity - stock.quantity, 0, user, why)
     if increased:
         assign_stock(stock, user)
+    if remember and previous != stock.quantity:
+        remember_undo(
+            user,
+            "stock_level",
+            f"Zmiana stanu {stock.name}",
+            {"stock_id": stock.pk, "quantity": str(previous)},
+        )
     return stock
 
 

@@ -78,7 +78,11 @@ EOF
 cat > "$tmp/bin/git" << 'EOF'
 #!/bin/sh
 case "$1" in
-  status) [ "${GIT_DIRTY:-0}" = "1" ] && printf ' M file\n' ;;
+  status)
+    [ "${GIT_DIRTY:-0}" = "1" ] && printf ' M file\n'
+    [ "${GIT_CADDY:-0}" = "1" ] && printf ' M Caddyfile\n'
+    exit 0
+    ;;
   fetch) exit 0 ;;
   rev-parse)
     if [ "$2" = "HEAD" ]; then printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'; exit 0; fi
@@ -91,13 +95,29 @@ esac
 EOF
 cat > "$tmp/bin/gh" << 'EOF'
 #!/bin/sh
+sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 if [ "${CI_SHOULD_FAIL:-0}" = "1" ]; then
-  printf 'quality\tfailure\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
-  printf 'application\tfailure\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+  printf 'quality\tfailure\tcompleted\t%s\n' "$sha"
+  printf 'application\tfailure\tcompleted\t%s\n' "$sha"
   exit 0
 fi
-printf 'quality\tsuccess\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
-printf 'application\tsuccess\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+if [ "${CI_PENDING_THEN_SUCCESS:-0}" = "1" ]; then
+  calls="${GH_CALLS_FILE:-/tmp/popmes-gh-calls}"
+  n=0
+  [ -f "$calls" ] && n="$(cat "$calls")"
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$calls"
+  if [ "$n" -lt 2 ]; then
+    printf 'application\t\tin_progress\t%s\n' "$sha"
+    printf 'quality\tsuccess\tcompleted\t%s\n' "$sha"
+    exit 0
+  fi
+fi
+if [ "${CI_SUCCESS_BESIDE_PENDING:-0}" = "1" ]; then
+  printf 'application\t\tin_progress\t%s\n' "$sha"
+fi
+printf 'quality\tsuccess\tcompleted\t%s\n' "$sha"
+printf 'application\tsuccess\tcompleted\t%s\n' "$sha"
 EOF
 cat > "$tmp/bin/curl" << 'EOF'
 #!/bin/sh
@@ -142,6 +162,36 @@ dirty_status=$?
 set -e
 test "$dirty_status" -ne 0
 grep -q 'local changes' "$tmp/dirty.err"
+
+# A local Caddyfile is the only allowed change. It comes back after the update.
+export GIT_DIRTY=0
+export GIT_CADDY=1
+printf 'tailscale-marker\n' > Caddyfile
+bash scripts/update.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --verified >"$tmp/caddy.out" 2>"$tmp/caddy.err"
+grep -q 'tailscale-marker' Caddyfile
+grep -q 'local Caddyfile' "$tmp/caddy.out"
+export GIT_CADDY=0
+
+# An older successful run is enough while a newer run for the same commit is still going.
+export CI_SUCCESS_BESIDE_PENDING=1
+bash scripts/update.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --verified >"$tmp/pending-ok.out" 2>"$tmp/pending-ok.err"
+grep -q 'Update finished' "$tmp/pending-ok.out"
+if grep -q 'Waiting for check' "$tmp/pending-ok.out"; then
+  echo "A finished successful check should not wait for a newer run." >&2
+  exit 1
+fi
+export CI_SUCCESS_BESIDE_PENDING=0
+
+# A check that is only in progress is polled until it succeeds.
+export CI_PENDING_THEN_SUCCESS=1
+export GH_CALLS_FILE="$tmp/gh-calls"
+export UPDATE_CHECK_INTERVAL=0
+rm -f "$GH_CALLS_FILE"
+bash scripts/update.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --verified >"$tmp/wait.out" 2>"$tmp/wait.err"
+grep -q 'Waiting for check application' "$tmp/wait.out"
+grep -q 'Update finished' "$tmp/wait.out"
+export CI_PENDING_THEN_SUCCESS=0
+unset UPDATE_CHECK_INTERVAL
 
 # Failed CI is not treated as verified.
 export GIT_DIRTY=0

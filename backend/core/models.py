@@ -334,6 +334,7 @@ class StockItem(models.Model):
     artwork_sha256 = models.CharField(max_length=64, blank=True, default="")
     artwork_version = models.PositiveIntegerField(null=True, blank=True)
     artwork_unknown = models.BooleanField(default=False)
+    archived = models.BooleanField(default=False)
     label = models.ForeignKey(
         Label, null=True, blank=True, related_name="stock_lots", on_delete=models.PROTECT
     )
@@ -504,6 +505,18 @@ class Profile(models.Model):
     current_workspace = models.ForeignKey(
         Workspace, null=True, blank=True, on_delete=models.SET_NULL, related_name="members"
     )
+
+
+class UndoAction(models.Model):
+    """The one change this user can take back, like a single Ctrl+Z."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="undo_action"
+    )
+    label = models.CharField(max_length=180)
+    kind = models.CharField(max_length=40)
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(default=timezone.now)
 
 
 class RequestReceipt(models.Model):

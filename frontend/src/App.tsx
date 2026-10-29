@@ -399,7 +399,8 @@ export default function App() {
       dir: "asc" | "desc";
     } | null>(null),
     [ordersOffset, setOrdersOffset] = useState(0),
-    [catalogTab, setCatalogTab] = useState("variants");
+    [catalogTab, setCatalogTab] = useState("variants"),
+    [showArchive, setShowArchive] = useState(false);
   const [modal, setModal] = useState<ModalState | null>(null),
     [selected, setSelected] = useState<number | null>(null),
     [detail, setDetail] = useState<Detail | null>(null),
@@ -731,7 +732,22 @@ export default function App() {
     setSelected(null);
     setFocus(null);
     setMobile(false);
+    setShowArchive(false);
   }
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+      if (event.shiftKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      if (!state?.undo || busy) return;
+      event.preventDefault();
+      void perform("undo/", {}, false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [state?.undo, busy]);
   function open(m: ModalState) {
     setError("");
     setModal(m);
@@ -1279,6 +1295,17 @@ export default function App() {
             <span />
             {offline ? "Brak synchronizacji" : "Dane na bieżąco"}
           </div>
+          {state?.undo && (
+            <button
+              type="button"
+              className="text-button"
+              title="Cofnij ostatnią zmianę (Ctrl+Z)"
+              disabled={busy}
+              onClick={() => void perform("undo/", {}, false)}
+            >
+              Cofnij
+            </button>
+          )}
           <button
             type="button"
             className="mode-toggle"
@@ -2366,14 +2393,20 @@ export default function App() {
                       query={query}
                       setQuery={setQuery}
                       placeholder="Szukaj produktu…"
-                    />
+                    >
+                      <button type="button" onClick={() => setShowArchive((value) => !value)}>
+                        {showArchive ? "Aktywny katalog" : "Archiwum"}
+                      </button>
+                    </Toolbar>
                     {catalogTab === "products" ? (
                       <div className="catalog-grid">
                         {state.products
-                          .filter((p) =>
-                            (p.name + p.code)
-                              .toLowerCase()
-                              .includes(query.toLowerCase()),
+                          .filter(
+                            (p) =>
+                              p.active !== showArchive &&
+                              (p.name + p.code)
+                                .toLowerCase()
+                                .includes(query.toLowerCase()),
                           )
                           .map((p) => (
                             <button
@@ -2423,11 +2456,20 @@ export default function App() {
                           </thead>
                           <tbody>
                             {state.variants
-                              .filter((v) =>
-                                (v.name + v.sku)
-                                  .toLowerCase()
-                                  .includes(query.toLowerCase()),
-                              )
+                              .filter((v) => {
+                                const product = state.products.find(
+                                  (item) => item.id === v.product,
+                                );
+                                const visible = showArchive
+                                  ? !v.active || !product?.active
+                                  : v.active && product?.active;
+                                return (
+                                  visible &&
+                                  (v.name + v.sku)
+                                    .toLowerCase()
+                                    .includes(query.toLowerCase())
+                                );
+                              })
                               .map((v) => (
                                 <tr
                                   key={v.id}
@@ -2518,7 +2560,11 @@ export default function App() {
                     query={query}
                     setQuery={setQuery}
                     placeholder="Szukaj klienta…"
-                  />
+                  >
+                    <button type="button" onClick={() => setShowArchive((value) => !value)}>
+                      {showArchive ? "Aktywni klienci" : "Archiwum"}
+                    </button>
+                  </Toolbar>
                   <div className="table-wrap">
                     <table>
                       <thead>
@@ -2532,10 +2578,12 @@ export default function App() {
                       </thead>
                       <tbody>
                         {state.customers
-                          .filter((c) =>
-                            (c.name + c.email + c.phone)
-                              .toLowerCase()
-                              .includes(query.toLowerCase()),
+                          .filter(
+                            (c) =>
+                              c.active !== showArchive &&
+                              (c.name + c.email + c.phone)
+                                .toLowerCase()
+                                .includes(query.toLowerCase()),
                           )
                           .map((c) => (
                             <tr key={c.id}>
@@ -2549,7 +2597,7 @@ export default function App() {
                               <td>{c.email || "—"}</td>
                               <td>{c.phone || "—"}</td>
                               <td>
-                                {can("sales", "manager") && (
+                                {can("sales", "manager") && !showArchive && (
                                   <button
                                     className="icon-button"
                                     aria-label={`Usuń ${c.name}`}
@@ -2557,7 +2605,7 @@ export default function App() {
                                     onClick={() => {
                                       if (
                                         !window.confirm(
-                                          `Usunąć klienta „${c.name}”? Nie da się usunąć klienta, który ma zamówienia.`,
+                                          `Przenieść klienta „${c.name}” do archiwum? Będzie go można przywrócić.`,
                                         )
                                       )
                                         return;
@@ -2568,6 +2616,20 @@ export default function App() {
                                     }}
                                   >
                                     <Trash2 size={15} />
+                                  </button>
+                                )}
+                                {can("sales", "manager") && showArchive && (
+                                  <button
+                                    className="text-button"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      void perform(
+                                        `catalog/customers/${c.id}/restore/`,
+                                        {},
+                                      )
+                                    }
+                                  >
+                                    Przywróć
                                   </button>
                                 )}
                                 <button
@@ -2871,20 +2933,26 @@ export default function App() {
                       query={query}
                       setQuery={setQuery}
                       placeholder="Szukaj pozycji magazynowej…"
-                    />
+                    >
+                      <button type="button" onClick={() => setShowArchive((value) => !value)}>
+                        {showArchive ? "Magazyn" : "Archiwum surowców"}
+                      </button>
+                    </Toolbar>
                   </section>
                   {(state.categories || []).map((category) => {
+                    if (showArchive && category.system) return null;
                     const rows = sortStock(
                       (state.stock || []).filter(
                         (item) =>
                           item.category_id === category.id &&
+                          item.archived === showArchive &&
                           (item.name + item.code)
                             .toLowerCase()
                             .includes(query.toLowerCase()),
                       ),
                       stockSort,
                     );
-                    if (!rows.length && query) return null;
+                    if (!rows.length && (query || showArchive)) return null;
                     return (
                       <section className="panel" key={category.id}>
                         <div className="panel-head">
@@ -3597,13 +3665,13 @@ export default function App() {
                       Edytuj
                     </button>
                   )}
-                  {can("manager") && !focusedStock.variant_id && (
+                  {can("manager") && !focusedStock.variant_id && !focusedStock.archived && (
                     <button
                       disabled={busy}
                       onClick={() => {
                         if (
                           !window.confirm(
-                            `Usunąć surowiec „${focusedStock.name}”? Nie da się usunąć pozycji ze stanem, recepturą albo historią ruchów.`,
+                            `Przenieść surowiec „${focusedStock.name}” do archiwum? Będzie go można przywrócić.`,
                           )
                         )
                           return;
@@ -3615,6 +3683,21 @@ export default function App() {
                       }}
                     >
                       Usuń
+                    </button>
+                  )}
+                  {can("manager") && focusedStock.archived && (
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() =>
+                        void perform(`stock/${focusedStock.id}/restore/`, {}).then(
+                          (result) => {
+                            if (result) setFocus(null);
+                          },
+                        )
+                      }
+                    >
+                      Przywróć
                     </button>
                   )}
                   {can("admin", "manager") && stockVariant && (
@@ -3843,13 +3926,13 @@ export default function App() {
                       Edytuj
                     </button>
                   )}
-                  {can("admin", "manager") && (
+                  {can("admin", "manager") && focusedProduct.active && (
                     <button
                       disabled={busy}
                       onClick={() => {
                         if (
                           !window.confirm(
-                            `Usunąć produkt „${focusedProduct.name}”? Nie da się usunąć smaku użytego w zamówieniach.`,
+                            `Przenieść produkt „${focusedProduct.name}” do archiwum? Będzie go można przywrócić.`,
                           )
                         )
                           return;
@@ -3862,6 +3945,22 @@ export default function App() {
                       }}
                     >
                       Usuń
+                    </button>
+                  )}
+                  {can("admin", "manager") && !focusedProduct.active && (
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() =>
+                        void perform(
+                          `catalog/products/${focusedProduct.id}/restore/`,
+                          {},
+                        ).then((result) => {
+                          if (result) setFocus(null);
+                        })
+                      }
+                    >
+                      Przywróć
                     </button>
                   )}
                 </div>
@@ -3960,13 +4059,13 @@ export default function App() {
                       Edytuj
                     </button>
                   )}
-                  {can("admin", "manager") && (
+                  {can("admin", "manager") && focusedVariant.active && (
                     <button
                       disabled={busy}
                       onClick={() => {
                         if (
                           !window.confirm(
-                            `Usunąć wariant „${focusedVariant.name}”? Nie da się usunąć wariantu użytego w zamówieniach albo magazynie.`,
+                            `Przenieść wariant „${focusedVariant.name}” do archiwum? Będzie go można przywrócić.`,
                           )
                         )
                           return;
@@ -3979,6 +4078,22 @@ export default function App() {
                       }}
                     >
                       Usuń
+                    </button>
+                  )}
+                  {can("admin", "manager") && !focusedVariant.active && (
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() =>
+                        void perform(
+                          `catalog/variants/${focusedVariant.id}/restore/`,
+                          {},
+                        ).then((result) => {
+                          if (result) setFocus(null);
+                        })
+                      }
+                    >
+                      Przywróć
                     </button>
                   )}
                   {can("manager") && (
@@ -5096,10 +5211,12 @@ export default function App() {
                       </p>
                     ) : (
                       (state?.stock || [])
-                        .filter((item) =>
-                          `${item.name} ${item.code}`
-                            .toLowerCase()
-                            .includes(receiptQuery.trim().toLowerCase()),
+                        .filter(
+                          (item) =>
+                            !item.archived &&
+                            `${item.name} ${item.code}`
+                              .toLowerCase()
+                              .includes(receiptQuery.trim().toLowerCase()),
                         )
                         .slice(0, 20)
                         .map((item) => {
@@ -5127,10 +5244,12 @@ export default function App() {
                         })
                     )}
                     {receiptQuery.trim().length > 0 &&
-                      !(state?.stock || []).some((item) =>
-                        `${item.name} ${item.code}`
-                          .toLowerCase()
-                          .includes(receiptQuery.trim().toLowerCase()),
+                      !(state?.stock || []).some(
+                        (item) =>
+                          !item.archived &&
+                          `${item.name} ${item.code}`
+                            .toLowerCase()
+                            .includes(receiptQuery.trim().toLowerCase()),
                       ) && (
                         <p className="form-help">Brak pozycji o tej nazwie.</p>
                       )}
