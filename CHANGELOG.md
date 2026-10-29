@@ -11,6 +11,7 @@ Kolejne zmiany trafiają tutaj, zanim dostaną numer wydania.
 - W menu Produkcja widać, ile opakowań zostało do wyprodukowania, a w menu Wysyłka, ile zostało do wysłania.
 - Z katalogu można usunąć nieużywany smak, wariant, klienta i surowiec. Pozycja użyta w zamówieniu, magazynie albo recepturze zostaje, a komunikat mówi dlaczego.
 - Komunikaty błędów podają po polsku, które pole trzeba poprawić.
+- Obraz strony podnosi bibliotekę brotli, bo skan obrazu zgłaszał w niej podatność.
 
 Aktualizacja istniejącej instalacji, po zielonych kontrolach `quality` i `application` dla tego commita:
 
