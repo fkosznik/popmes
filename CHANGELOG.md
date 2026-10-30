@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Program nie tworzy przykładowego katalogu, surowców ani zamówień demonstracyjnych. Oferta i stany są tylko w bazie.
+
 Kolejne zmiany trafiają tutaj, zanim dostaną numer wydania.
 
 ## 0.1.3 — 2026-10-29

@@ -26,7 +26,7 @@ from rest_framework.test import APIClient
 
 from django.contrib.auth import get_user_model
 
-from core.models import Customer, Label, Order, StockItem, Variant
+from core.models import Customer, Label, Order, Product, StockItem, Variant
 
 
 def current_user():
@@ -55,8 +55,14 @@ def seed():
     if current_user() != "popmes_app":
         raise SystemExit("seed connected as an unexpected role")
     call_command("bootstrap")
-    call_command("seed_catalog")
-    variant = Variant.objects.get(sku="KAR-30-LOGO")
+    product = Product.objects.create(code="TST", name="Smak testowy", color="#888888")
+    variant = Variant.objects.create(
+        product=product,
+        sku="TST-30-LOGO",
+        name="Smak testowy z logo",
+        weight_g=30,
+        custom_label=True,
+    )
     customer = Customer.objects.create(
         name="Odtworzenie ról",
         email="role-restore@example.com",

@@ -46,9 +46,9 @@ class FlowTests(TestCase):
         )
         self.client = APIClient()
         self.client.force_login(self.admin)
-        self.product = Product.objects.create(code="KAR", name="Karmel")
+        self.product = Product.objects.create(code="SMK", name="Smak testowy")
         self.variant = Variant.objects.create(
-            product=self.product, sku="KAR30", name="Karmel 30", weight_g=30
+            product=self.product, sku="SMK30", name="Smak testowy 30", weight_g=30
         )
         self.customer = Customer.objects.create(
             name="Firma testowa",
@@ -155,7 +155,7 @@ class FlowTests(TestCase):
 
     def test_flavor_grouping_and_frozen_snapshot(self):
         variant2 = Variant.objects.create(
-            product=self.product, sku="KAR100", name="Karmel 100", weight_g=100
+            product=self.product, sku="SMK100", name="Smak testowy 100", weight_g=100
         )
         r = self.post(
             "orders/save/",
@@ -485,7 +485,7 @@ class FlowTests(TestCase):
         self.customer.phone = "500600700"
         self.customer.save()
         other = Variant.objects.create(
-            product=self.product, sku="KAR100B", name="Słony karmel", weight_g=30
+            product=self.product, sku="SMK100B", name="Smak testowy B", weight_g=30
         )
         response = self.post(
             "orders/save/",
@@ -612,17 +612,25 @@ class FlowTests(TestCase):
             self.assertEqual(sum(m.delta_g for m in b.movements.all()), b.available_g)
 
 
+    def ingredient(self):
+        from .models import StockCategory, StockItem
+
+        category = StockCategory.objects.get(name="Półprodukty")
+        created = self.post(
+            "stock/products/",
+            {
+                "category_id": category.pk,
+                "name": "Składnik testowy",
+                "unit": "kg",
+            },
+        )
+        return StockItem.objects.get(pk=created.data["id"])
+
     def test_warehouse_shows_materials_and_follows_packages(self):
         from decimal import Decimal
         from .models import StockItem
 
-        self.assertTrue(StockItem.objects.filter(code="CUKIER").exists())
-        self.assertTrue(StockItem.objects.filter(code="MASLO").exists())
-        self.assertTrue(StockItem.objects.filter(code="SOL").exists())
-        self.assertTrue(StockItem.objects.filter(code="SYROP").exists())
-        self.assertTrue(StockItem.objects.filter(code="OPAK-15").exists())
-        self.assertTrue(StockItem.objects.filter(code="ETY-30-PRZOD").exists())
-        self.assertTrue(StockItem.objects.filter(code="ETY-400-TYL").exists())
+        material = self.ingredient()
         order = self.order(10)
         production, packing = self.tasks(order)
         self.post(f"tasks/{production.pk}/report/", {"units": 4})
@@ -631,22 +639,21 @@ class FlowTests(TestCase):
         self.post(f"tasks/{packing.pk}/report/", {"units": 3})
         stock.refresh_from_db()
         self.assertEqual(stock.quantity, 1)
-        sugar = StockItem.objects.get(code="CUKIER")
-        self.post(f"stock/{sugar.pk}/", {"quantity": "2.500", "reason": "Dostawa"})
-        sugar.refresh_from_db()
-        self.assertEqual(sugar.quantity, Decimal("2.500"))
+        self.post(f"stock/{material.pk}/", {"quantity": "2.500", "reason": "Dostawa"})
+        material.refresh_from_db()
+        self.assertEqual(material.quantity, Decimal("2.500"))
         worker = get_user_model().objects.create_user(
             "stock-worker", password="Test-password-123!"
         )
         worker.groups.add(Group.objects.get_or_create(name="production")[0])
         self.client.force_login(worker)
         self.post(
-            f"stock/{sugar.pk}/",
+            f"stock/{material.pk}/",
             {"quantity": "9", "reason": "Bez uprawnień"},
             expected=403,
         )
         data = self.client.get("/api/state/").json()
-        self.assertTrue(any(item["code"] == "ETY-15-TYL" for item in data["stock"]))
+        self.assertTrue(any(item["id"] == material.pk for item in data["stock"]))
         self.assertTrue(any(item["name"] == "Półprodukty" for item in data["categories"]))
 
     def test_warehouse_allocates_stock_and_accepts_deliveries(self):
@@ -688,13 +695,13 @@ class FlowTests(TestCase):
             {"stock_id": product, "quantity": "12", "reason": "Dostawa z poniedziałku"},
         )
         self.assertEqual(StockItem.objects.get(pk=product).quantity, Decimal("12"))
-        sugar = StockItem.objects.get(code="CUKIER")
+        material = self.ingredient()
         self.post(
             "stock/receipt/",
-            {"stock_id": sugar.pk, "quantity": "1.5", "reason": "Worek cukru"},
+            {"stock_id": material.pk, "quantity": "1.5", "reason": "Dostawa"},
         )
-        sugar.refresh_from_db()
-        self.assertEqual(sugar.quantity, Decimal("1.5"))
+        material.refresh_from_db()
+        self.assertEqual(material.quantity, Decimal("1.5"))
         self.post(f"tasks/{shipping.pk}/report/", {"units": 1}, expected=400)
         worker = get_user_model().objects.create_user(
             "receipt-worker", password="Test-password-123!"
@@ -703,7 +710,7 @@ class FlowTests(TestCase):
         self.client.force_login(worker)
         self.post(
             "stock/receipt/",
-            {"stock_id": sugar.pk, "quantity": "1", "reason": "Bez uprawnień"},
+            {"stock_id": material.pk, "quantity": "1", "reason": "Bez uprawnień"},
             expected=403,
         )
 
@@ -711,18 +718,18 @@ class FlowTests(TestCase):
         from decimal import Decimal
         from .models import Recipe, StockItem
 
-        sugar = StockItem.objects.get(code="CUKIER")
+        sugar = self.ingredient()
         self.post(
             f"stock/{sugar.pk}/",
-            {"quantity": "1.000", "reason": "Stan początkowy cukru"},
+            {"quantity": "1.000", "reason": "Stan początkowy"},
         )
         supplier = self.post(
             "suppliers/",
-            {"name": "Cukrownia", "phone": "500100200", "email": "biuro@cukrownia.test"},
+            {"name": "Dostawca testowy", "phone": "500100200", "email": "biuro@dostawca.test"},
         ).data["id"]
         self.post(f"stock/{sugar.pk}/supplier/", {"supplier_id": supplier})
         sugar.refresh_from_db()
-        self.assertEqual(sugar.supplier.name, "Cukrownia")
+        self.assertEqual(sugar.supplier.name, "Dostawca testowy")
         self.post(
             "recipes/",
             {
@@ -785,7 +792,7 @@ class FlowTests(TestCase):
         from decimal import Decimal
         from .models import StockItem, StockMove
         s.sync_catalog_stock()
-        sugar = StockItem.objects.get(code="CUKIER")
+        sugar = self.ingredient()
         self.post(f"stock/{sugar.pk}/", {"quantity": "0.1", "reason": "Initial"})
         self.post("recipes/", {"variant_id": self.variant.pk,
                   "lines": [{"stock_id": sugar.pk, "quantity": "0.020"}]})
@@ -938,7 +945,7 @@ class FlowTests(TestCase):
         plain = StockItem.objects.get(variant=self.variant, artwork_sha256="")
         StockItem.objects.create(
             code="UNK-LEGACY",
-            name="Karmel 30 · grafika nieznana",
+            name="Smak testowy 30 · grafika nieznana",
             group="popcorn",
             unit="szt",
             quantity=8,
@@ -986,7 +993,7 @@ class FlowTests(TestCase):
         before = list(StockItem.objects.order_by("pk").values_list("pk", "quantity", "reserved", "name"))
         with CaptureQueriesContext(connection) as ctx:
             response = self.client.get("/api/state/")
-            detail = self.client.get(f"/api/stock/{StockItem.objects.get(code='CUKIER').pk}/detail/")
+            detail = self.client.get(f"/api/stock/{StockItem.objects.get(variant=self.variant).pk}/detail/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(detail.status_code, 200)
         self.assertFalse(StockItem.objects.filter(variant=extra).exists())
@@ -1121,7 +1128,7 @@ class FlowTests(TestCase):
     def test_stock_of_other_weight_cannot_cover_order(self):
         from .models import StockItem
         other_variant = Variant.objects.create(
-            product=self.product, sku="KAR100-OTHER", name="Karmel 100g", weight_g=100)
+            product=self.product, sku="SMK100-OTHER", name="Smak testowy 100g", weight_g=100)
         s.sync_catalog_stock()
         stock = StockItem.objects.get(variant=other_variant)
         self.post(f"stock/{stock.pk}/", {"quantity": "20", "reason": "Initial"})
@@ -1160,7 +1167,7 @@ class FlowTests(TestCase):
         from decimal import Decimal
         from .models import StockCategory, StockItem, Supplier
 
-        sugar = StockItem.objects.get(code="CUKIER")
+        sugar = self.ingredient()
         self.assertIsNotNone(sugar.category_id)
         supplier_id = self.post(
             "suppliers/",

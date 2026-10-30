@@ -30,7 +30,7 @@ Receptury/BOM, magazyn surowców, automatyczne grupowanie wielu zamówień, zest
 
 | Pojęcie | Znaczenie |
 |---|---|
-| Produkt produkcyjny | Popcorn określonego smaku i specyfikacji, np. słony karmel; rozliczany masowo |
+| Produkt produkcyjny | Popcorn określonego smaku i specyfikacji; rozliczany masowo |
 | Wariant sprzedażowy | Produkt produkcyjny + gramatura + opakowanie + sposób etykietowania |
 | Zamówienie | Wymagania klienta: pozycje, ilości, termin i personalizacja |
 | Zlecenie produkcji | Zadanie przygotowania określonej masy produktu |
@@ -259,25 +259,25 @@ Pierwsza implementacja: frontend, modułowy backend i relacyjna baza danych, uru
 
 Backend odpowiada za reguły biznesowe, uprawnienia, transakcje i API. Frontend prezentuje dane i formularze. Baza oraz załączniki mają trwałe wolumeny. Baza nie jest udostępniana publicznie.
 
-Repozytorium zawiera instrukcję uruchomienia, przykład konfiguracji bez sekretów, migracje bazy i sztuczne dane demonstracyjne. Sekrety oraz prawdziwe dane klientów nie trafiają do Git.
+Repozytorium zawiera instrukcję uruchomienia, przykład konfiguracji bez sekretów i migracje bazy. Nie zawiera katalogu, receptur, stanów magazynowych ani zamówień. Sekrety oraz dane z bazy nie trafiają do Git.
 
 Przed pilotażem: automatyczna codzienna kopia bazy i załączników, kopia poza hostem aplikacji oraz przeprowadzony test odtworzenia. Konkretne biblioteki, wersje i schemat API wybierzemy w kolejnym kroku.
 
 ## 16. Przykład pełnego obiegu
 
-Zamówienie demonstracyjne:
+Zamówienie przykładowe, bez nazw z oferty:
 
-- 200 × słony karmel 30 g z etykietą klienta = 6 kg;
-- 50 × czekolada 100 g = 5 kg.
+- 200 × smak A 30 g z etykietą klienta = 6 kg;
+- 50 × smak B 100 g = 5 kg.
 
 Po zatwierdzeniu powstają dwa zlecenia produkcji i dwa pakowania.
 
-1. Produkcja zgłasza 4 kg karmelu.
+1. Produkcja zgłasza 4 kg smaku A.
 2. Po zatwierdzeniu etykiety pakowanie zgłasza 100 szt. po 30 g i 3 kg zużycia.
-3. Pozostaje 1 kg karmelu oraz 100 szt. do zapakowania. Zadanie produkcji nadal wymaga 2 kg.
+3. Pozostaje 1 kg smaku A oraz 100 szt. do zapakowania. Zadanie produkcji nadal wymaga 2 kg.
 4. Produkcja zgłasza kolejne 2 kg; dostępne stają się 3 kg.
 5. Pakowanie wykonuje pozostałe 100 szt., zużywając 3 kg z dostępnych partii.
-6. Czekolada przechodzi analogiczny proces: 5 kg i 50 szt.
+6. Smak B przechodzi analogiczny proces: 5 kg i 50 szt.
 7. Zamówienie staje się zrealizowane dopiero po zakończeniu obu pozycji.
 8. Sprzedaż oznacza wydanie. Historia zachowuje wykonawców, ilości i powiązania partii.
 

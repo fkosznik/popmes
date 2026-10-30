@@ -1,4 +1,26 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+async function ensureTestFlavor(page: Page) {
+  await page.getByRole("button", { name: /Katalog produktów/ }).click();
+  await page.getByRole("button", { name: /Smaki/ }).click();
+  if (await page.getByText("Smak testowy", { exact: true }).count()) return;
+  await page.getByRole("button", { name: "Dodaj smak" }).click();
+  await page.getByLabel("Nazwa", { exact: true }).fill("Smak testowy");
+  await page.getByLabel("Kod smaku").fill("TST");
+  await page.getByRole("button", { name: "Zapisz zmiany" }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await page.getByRole("button", { name: /Warianty/ }).click();
+  await page.getByRole("button", { name: "Dodaj wariant" }).click();
+  await page.getByLabel("Nazwa", { exact: true }).fill("Smak testowy");
+  await page.getByLabel("SKU").fill("TST-30");
+  await page
+    .getByLabel("Smak / produkt produkcyjny")
+    .selectOption({ label: "Smak testowy" });
+  await page.getByLabel("Masa netto (g)").fill("30");
+  await page.getByLabel("Opakowanie").fill("Worek");
+  await page.getByRole("button", { name: "Zapisz zmiany" }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+}
 
 test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   page,
@@ -16,6 +38,7 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   await expect(page.getByRole("heading", { name: /Cześć/ })).toBeVisible();
   await expect(page.locator(".metrics")).toBeVisible();
   await page.screenshot({ path: "/tmp/popmes-dashboard.png", fullPage: true });
+  await ensureTestFlavor(page);
   await page.getByRole("button", { name: "Klienci", exact: true }).click();
   await page.getByRole("button", { name: "Dodaj klienta" }).click();
   const customerName = "E2E · " + Date.now();
@@ -66,7 +89,7 @@ test("sprzedaż → częściowa produkcja → pakowanie → wydanie", async ({
   await page.getByRole("button", { name: "30 g", exact: true }).click();
   await page
     .getByRole("combobox", { name: "Smak 1", exact: true })
-    .selectOption({ label: "Słony karmel" });
+    .selectOption({ label: "Smak testowy" });
   await page.getByLabel("Ilość 1").clear();
   await page.getByLabel("Ilość 1").pressSequentially("30");
   await expect(page.getByLabel("Ilość 1")).toHaveValue("30");
@@ -145,6 +168,7 @@ test("grafika przy pozycji z logo", async ({ page }) => {
     .getByLabel("Hasło", { exact: true })
     .fill(process.env.POP_TEST_PASSWORD || "Local-test-Only-925!");
   await page.getByRole("button", { name: "Zaloguj się" }).click();
+  await ensureTestFlavor(page);
   await page
     .getByRole("button", { name: "Nowe zamówienie", exact: true })
     .click();
@@ -162,7 +186,7 @@ test("grafika przy pozycji z logo", async ({ page }) => {
   await page.getByRole("button", { name: "30 g", exact: true }).click();
   await page
     .getByRole("combobox", { name: "Smak 1", exact: true })
-    .selectOption({ label: "Słony karmel" });
+    .selectOption({ label: "Smak testowy" });
   await page.getByRole("checkbox", { name: "Popcorn z logo" }).check();
   await page.getByLabel("Ilość 1").fill("10");
   const file = page.locator('input[type="file"][name="label_0"]');

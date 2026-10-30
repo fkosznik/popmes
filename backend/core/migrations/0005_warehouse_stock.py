@@ -1,72 +1,8 @@
 import django.utils.timezone
 from django.conf import settings
 from django.db import migrations, models
-from django.db.models import F, Sum
-
-
 def seed_stock(apps, schema_editor):
-    StockItem = apps.get_model("core", "StockItem")
-    Variant = apps.get_model("core", "Variant")
-    Item = apps.get_model("core", "Item")
-    materials = [
-        ("CUKIER", "Cukier", "ingredient", "kg", 10),
-        ("MASLO", "Masło", "ingredient", "kg", 20),
-        ("SOL", "Sól", "ingredient", "kg", 30),
-        ("SYROP", "Syrop glukozowy", "ingredient", "kg", 40),
-    ]
-    for grams in (15, 30, 100, 400):
-        materials.append(
-            (f"OPAK-{grams}", f"Opakowanie {grams} g", "packaging", "szt", grams)
-        )
-        materials.append(
-            (
-                f"ETY-{grams}-PRZOD",
-                f"Etykieta {grams} g — przód",
-                "label",
-                "szt",
-                grams * 10 + 1,
-            )
-        )
-        materials.append(
-            (
-                f"ETY-{grams}-TYL",
-                f"Etykieta {grams} g — tył",
-                "label",
-                "szt",
-                grams * 10 + 2,
-            )
-        )
-    for code, name, group, unit, position in materials:
-        StockItem.objects.get_or_create(
-            code=code,
-            defaults={
-                "name": name,
-                "group": group,
-                "unit": unit,
-                "position": position,
-            },
-        )
-    for variant in Variant.objects.filter(active=True):
-        weight = variant.weight_g
-        label = str(int(weight)) if weight == int(weight) else format(weight, "f")
-        stock, _ = StockItem.objects.get_or_create(
-            code=f"POP-{variant.sku}",
-            defaults={
-                "name": f"{variant.name} · {label} g",
-                "group": "popcorn",
-                "unit": "szt",
-                "position": int(weight),
-                "variant": variant,
-            },
-        )
-        total = (
-            Item.objects.filter(variant=variant).aggregate(
-                q=Sum(F("produced") - F("packed"))
-            )["q"]
-            or 0
-        )
-        stock.quantity = total
-        stock.save(update_fields=["quantity"])
+    return
 
 
 class Migration(migrations.Migration):

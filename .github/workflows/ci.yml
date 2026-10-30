@@ -84,8 +84,6 @@ jobs:
           docker compose exec -T backend python manage.py test core -v 2
       - name: Upgrade an old schema without dropping logo stock
         run: bash scripts/schema-upgrade-check.sh
-      - name: Seed sample data
-        run: docker compose exec -T backend python manage.py seed_demo
       - name: Browser test
         run: |
           npm ci --prefix frontend

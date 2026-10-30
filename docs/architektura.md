@@ -17,7 +17,7 @@ React komunikuje się przez względne /api/, więc frontend i API mają ten sam 
 - views.py: API, uwierzytelnianie, role, transakcje, idempotencja.
 - serializers.py: walidacja katalogów.
 - presentation.py: dane interfejsu i maskowanie dostępu według roli.
-- management/commands: bootstrap, seed_catalog, seed_demo.
+- management/commands: bootstrap.
 - tests.py: przepływ, korekty, etykiety, uprawnienia, CSRF, współbieżność PostgreSQL.
 
 Jeden modułowy backend zachowuje transakcje między zamówieniem, partią i pakowaniem. Worker/broker nie są potrzebne do podstawowego obiegu.

@@ -39,6 +39,5 @@ elif [ "$status" -eq 3 ] || [ "$status" -eq 4 ]; then
 elif [ "$status" -ne 2 ]; then
   exit "$status"
 fi
-if [ "${SEED_CATALOG:-1}" = "1" ]; then python manage.py seed_catalog; fi
 exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60 \
   --access-logfile - --error-logfile - --capture-output

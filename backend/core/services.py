@@ -852,49 +852,6 @@ def grams_label(value):
     return format(number.normalize(), "f")
 
 
-def ensure_stock_catalog():
-    materials = [
-        ("CUKIER", "Cukier", "ingredient", "kg", 10),
-        ("MASLO", "Masło", "ingredient", "kg", 20),
-        ("SOL", "Sól", "ingredient", "kg", 30),
-        ("SYROP", "Syrop glukozowy", "ingredient", "kg", 40),
-    ]
-    for grams in (15, 30, 100, 400):
-        materials.append(
-            (f"OPAK-{grams}", f"Opakowanie {grams} g", "packaging", "szt", grams)
-        )
-        materials.append(
-            (
-                f"ETY-{grams}-PRZOD",
-                f"Etykieta {grams} g — przód",
-                "label",
-                "szt",
-                grams * 10 + 1,
-            )
-        )
-        materials.append(
-            (
-                f"ETY-{grams}-TYL",
-                f"Etykieta {grams} g — tył",
-                "label",
-                "szt",
-                grams * 10 + 2,
-            )
-        )
-    for code, name, group, unit, position in materials:
-        StockItem.objects.get_or_create(
-            code=code,
-            defaults={
-                "name": name,
-                "group": group,
-                "unit": unit,
-                "position": position,
-            },
-        )
-    for variant in Variant.objects.filter(active=True):
-        ensure_plain_stock(variant)
-
-
 def finished_category():
     category, _ = StockCategory.objects.get_or_create(
         system=True, defaults={"name": "Produkty", "position": 0}

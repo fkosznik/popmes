@@ -17,15 +17,7 @@ docker compose up -d --build
 
 Otwórz **http://localhost:8080**. Login: **admin**. Losowe hasło wyświetli skrypt konfiguracji; jest również zapisane w lokalnym `.env`. Przy kolejnych uruchomieniach istniejące hasło nie jest resetowane. `.env` nie trafia do repozytorium.
 
-Pierwszy start pustej bazy wykonuje migracje, tworzy konto administratora i przykładowy katalog POPME: cztery smaki, formaty 30/100/400 g i warianty z logo. **Sprawdź i dostosuj ten katalog do rzeczywistej oferty oraz opakowań.** Automatyczne tworzenie katalogu można wyłączyć przez `SEED_CATALOG=0`. Zwykły restart kontenera nie uruchamia migracji ponownie. Na istniejącej bazie migracje robi `bash scripts/migrate.sh` albo `bash scripts/update.sh`.
-
-Opcjonalne przykładowe zamówienia, wyraźnie oznaczone jako DEMO:
-
-```bash
-docker compose exec backend python manage.py seed_demo
-```
-
-Polecenie nie tworzy dodatkowych kont ani nie nadpisuje istniejących danych. Można je uruchomić ponownie bez powielania demonstracji.
+Pierwszy start pustej bazy wykonuje migracje i tworzy konto administratora. Katalog smaków, surowce, receptury i stany wpisujesz w aplikacji. Program nie dokłada przykładowej oferty. Zwykły restart kontenera nie uruchamia migracji ponownie. Na istniejącej bazie migracje robi `bash scripts/migrate.sh` albo `bash scripts/update.sh`.
 
 ## Pierwsze zamówienie
 
@@ -124,7 +116,7 @@ POP_TEST_URL=http://127.0.0.1:8080 POP_TEST_USER=admin POP_TEST_PASSWORD='haslo-
 
 Test przeglądarkowy zapisuje klienta i zamówienie E2E — uruchamiaj go w oddzielnej instalacji testowej. GitHub Actions buduje kontenery, uruchamia testy na PostgreSQL, przechodzi obieg w przeglądarce i porównuje dane po odtworzeniu kopii.
 
-Lokalny rozwój bez Dockera: Python 3.12, `pip install -r backend/requirements.txt`, ustaw `DJANGO_SECRET_KEY`, `DB_ENGINE=sqlite`, `ADMIN_PASSWORD` oraz `CSRF_TRUSTED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`. Uruchom migracje, bootstrap i seed_catalog, potem `python backend/manage.py runserver` oraz `npm run dev --prefix frontend`. SQLite służy tylko do prostych testów lokalnych — test blokad współbieżności wymaga PostgreSQL.
+Lokalny rozwój bez Dockera: Python 3.12, `pip install -r backend/requirements.txt`, ustaw `DJANGO_SECRET_KEY`, `DB_ENGINE=sqlite`, `ADMIN_PASSWORD` oraz `CSRF_TRUSTED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`. Uruchom migracje i bootstrap, potem `python backend/manage.py runserver` oraz `npm run dev --prefix frontend`. SQLite służy tylko do prostych testów lokalnych — test blokad współbieżności wymaga PostgreSQL.
 
 ## Dokumentacja
 
